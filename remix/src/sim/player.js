@@ -4,8 +4,10 @@ import {
   JUMP_VEL,
   MOVE_ACCEL_AIR,
   MOVE_ACCEL_GROUND,
-  MOVE_FRICTION,
+  MOVE_DECEL,
   MOVE_SPEED,
+  MOVE_TURN_AIR,
+  MOVE_TURN_GROUND,
   FOCUS_CAP,
   FOCUS_RECHARGE_LAYERS,
   PLAYER_FALL_CAP,
@@ -38,7 +40,7 @@ export class Player {
 
     this.offGround = 10;
     this.timeSinceJump = 10;
-    this.originalPos = this.x;
+    this.originalY = this.y;
     this.landSquash = 0;
     this.supportBlock = null;
     this.wallSide = 0;
@@ -50,8 +52,10 @@ export class Player {
     this.focusAimTimer = 0;
     this.focusAimRemaining = 0;
     this.focusTimer = 0;
+    this.focusCommittedFrame = -1;
     this.focusDX = 0;
     this.focusDY = 0;
+    this.lastGuardFrame = -1;
     this.stableFrames = 0;
     this.highestStableLayer = 0;
     this.focusProgress = 0;
@@ -60,12 +64,15 @@ export class Player {
 
   move(axis, timeScale = 1) {
     if (axis !== 0) {
-      const accel = this.offGround <= COYOTE_FRAMES ? MOVE_ACCEL_GROUND : MOVE_ACCEL_AIR;
+      const grounded = this.offGround <= COYOTE_FRAMES;
+      const reversing = this.xVel !== 0 && Math.sign(this.xVel) !== axis;
+      const accel = reversing
+        ? grounded ? MOVE_TURN_GROUND : MOVE_TURN_AIR
+        : grounded ? MOVE_ACCEL_GROUND : MOVE_ACCEL_AIR;
       this.xVel = approach(this.xVel, axis * MOVE_SPEED, accel * timeScale);
       this.facing = axis;
     } else {
-      this.xVel *= Math.pow(MOVE_FRICTION, timeScale);
-      if (Math.abs(this.xVel) < 0.05) this.xVel = 0;
+      this.xVel = approach(this.xVel, 0, MOVE_DECEL * timeScale);
     }
   }
 
@@ -115,7 +122,6 @@ export class Player {
   }
 
   updateX(timeScale = 1) {
-    this.originalPos = this.x;
     this.x += this.xVel * timeScale;
     this.clampX();
   }
@@ -130,6 +136,7 @@ export class Player {
   }
 
   updateY(upHeld, downHeld, timeScale = 1) {
+    this.originalY = this.y;
     const rising = this.yVel > 0;
     const gravityMul = rising && !upHeld ? 1.75 : 1;
     this.yVel -= GRAVITY * gravityMul * timeScale;

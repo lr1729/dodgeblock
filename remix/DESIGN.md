@@ -32,6 +32,8 @@ The following are correctness requirements, not tuning preferences:
 - fixed block rectangles never overlap;
 - a falling block uses swept vertical contact and cannot tunnel through a
   surface crossed during one step;
+- player movement resolves one axis at a time against the earliest crossed face
+  and projects exactly to that surface;
 - any positive horizontal overlap is physical contact;
 - stable block identity is an immutable ID, never array order;
 - in-flight blocks resolve lower-to-upper with stable ID tie-breaking;
@@ -66,10 +68,12 @@ This bounds material droughts without scheduling a rescue at a useful location.
 
 ## Player Movement
 
-Horizontal movement reaches full speed quickly and reverses without a long
-momentum penalty. Held jump repeats on valid footing. Jump buffering and coyote
-time make late input reliable. A wall jump can be used once from a given wall
-until the player lands or reaches the opposite wall.
+Horizontal starts, reversals, and stops use separate curves: four frames to top
+ground speed, seven for a full reversal, and three to stop. Held jump repeats on
+valid footing. Jump buffering and coyote time make late input reliable. A wall
+jump can be used once from a given wall until the player lands or reaches the
+opposite wall. Solid contacts resolve to exact faces, so alignment never depends
+on the fractional position of the previous frame.
 
 A lethal block kills only when its descending lower face reaches the player's
 head above the crush threshold. Side and corner contacts push. Incidental top
@@ -108,6 +112,13 @@ shape of a block, never whether an otherwise identical cut input works:
 Focus is therefore one scarce answer with several uses: remove an immediate
 hazard, escape a pocket, cross a route, or prune a tower.
 
+Auto Guard is a configurable form of the same resource, not a separate life
+system. A lethal overhead impact consumes one available charge automatically,
+shatters every block in that same-frame crush incident, and kicks the player
+upward. If Aim is active, its already-spent charge becomes the guard;
+the player is never charged twice. Camera falls remain lethal. Disabling Auto
+Guard produces the Hardcore ruleset, with a separate best height.
+
 ## Structural Cuts
 
 There is no spontaneous load simulation. Hidden strength propagation produced
@@ -138,13 +149,17 @@ Score records the highest stable footing reached, not the peak of a jump. This
 keeps score and Focus recharge aligned around the same objective: establish a
 higher route.
 
-One charge is earned for each new three-layer stable threshold. If charges are
-already full, at most one visible three-layer credit stays banked; higher
-unspent thresholds are not hidden reserves. The HUD shows two charge diamonds
-and three small stable-layer segments.
+One charge is earned for each new three-layer stable threshold. Progress made
+while charges are full is discarded, so keeping protection ready sacrifices
+future recharge progress. The HUD shows two charge diamonds and the remaining
+new layers required for the next charge; there is no reserve.
 
 The rising camera makes waiting on solved low terrain a losing strategy. Its
 pressure follows the storm rate, keeping climbing and survival coupled.
+
+When enabled, an exact in-memory checkpoint is armed every 1,200 stable height.
+It can only be captured from safe footing outside Aim or a dash. Continuing is
+explicitly assisted and cannot update either one-life best.
 
 ## Storm Fairness
 

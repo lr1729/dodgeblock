@@ -38,6 +38,7 @@ export class Block {
     this.idx = -1;
     this.x = x;
     this.y = y;
+    this.previousY = y;
     this.w = w;
     this.h = h;
     this.yVel = 0;
@@ -79,6 +80,7 @@ export class BlockManager {
         idx: block.idx,
         x: block.x,
         y: block.y,
+        previousY: block.previousY,
         w: block.w,
         h: block.h,
         yVel: block.yVel,
@@ -229,6 +231,7 @@ export class BlockManager {
     for (let i = 0; i < this.falling.length; i++) {
       const b = this.falling[i];
       const previousY = oldY.get(b);
+      b.previousY = previousY;
       const previousBottom = previousY + b.h;
       b.xVel = 0;
       b.yVel = Math.min(b.spec.maxFallSpeed, b.yVel + b.spec.gravity * timeScale);

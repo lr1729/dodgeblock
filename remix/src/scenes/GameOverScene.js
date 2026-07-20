@@ -8,6 +8,7 @@ import { setupCamera, textStyle } from '../utils.js';
 import { drawSkyGradient, drawCloud } from '../render/fx.js';
 import { sfx } from '../audio.js';
 import { storage } from '../storage.js';
+import { normalizeRunRules } from '../rules.js';
 
 const DEATH_CAUSES = {
   squished: 'Crushed from above',
@@ -21,6 +22,7 @@ export class GameOverScene extends Phaser.Scene {
 
   init(data) {
     this.result = data ?? {};
+    this.rules = normalizeRunRules(this.result.rules);
   }
 
   create() {
@@ -36,7 +38,7 @@ export class GameOverScene extends Phaser.Scene {
     const newBest = this.result.best === true;
     const reportedBest = typeof this.result.best === 'number'
       ? this.result.best
-      : storage.data.bestHeight;
+      : storage.bestForRules(this.rules);
     const numericBest = Number(reportedBest);
     const storedBest = Number.isFinite(numericBest) ? Math.round(numericBest) : 0;
     const best = this.result.assisted ? storedBest : Math.max(height, storedBest);
@@ -82,9 +84,14 @@ export class GameOverScene extends Phaser.Scene {
         .setAlpha(0.66);
     }
 
-    if (this.result.assisted) {
+    if (this.result.assisted || this.rules.autoGuard) {
+      const mode = this.result.continued
+        ? 'CHECKPOINT RUN'
+        : this.rules.autoGuard
+          ? 'AUTO GUARD'
+          : 'ASSISTED RUN';
       this.add
-        .text(400, 326, 'CHECKPOINT RUN', textStyle(11, {
+        .text(400, 326, mode, textStyle(11, {
           color: '#d5dfe4',
           fontStyle: 'bold',
         }))
@@ -93,7 +100,15 @@ export class GameOverScene extends Phaser.Scene {
     }
 
     const checkpoint = this.result.checkpoint
-      ? this.command(250, 374, 'CHECKPOINT', true)
+      ? this.command(
+          250,
+          374,
+          `CONTINUE ${Math.max(
+            0,
+            Math.round(this.result.checkpoint?.height ?? this.result.checkpointHeight ?? 0),
+          ).toLocaleString()}`,
+          true,
+        )
       : null;
     const replay = this.command(checkpoint ? 410 : 330, 374, 'REPLAY', !checkpoint);
     const menu = this.command(checkpoint ? 550 : 470, 374, 'MENU', false);
@@ -114,11 +129,16 @@ export class GameOverScene extends Phaser.Scene {
       sfx.uiClick();
       this.scene.start(scene, data);
     };
-    const restart = () => go('Game', { seed });
+    const restart = () => go('Game', {
+      seed,
+      rules: this.rules,
+    });
     const resume = () => go('Game', {
       seed,
       checkpoint: this.result.checkpoint,
       assisted: true,
+      continued: true,
+      rules: this.rules,
     });
     const toMenu = () => go('Menu');
 

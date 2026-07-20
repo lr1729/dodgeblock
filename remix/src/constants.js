@@ -21,9 +21,11 @@ export const GRAVITY = 0.34;
 export const JUMP_VEL = 8.5;
 export const PLAYER_FALL_CAP = 10;
 export const MOVE_SPEED = 6;
-export const MOVE_ACCEL_GROUND = 2.2;
-export const MOVE_ACCEL_AIR = 1.55;
-export const MOVE_FRICTION = 0.68;
+export const MOVE_ACCEL_GROUND = 1.5;
+export const MOVE_ACCEL_AIR = 1.2;
+export const MOVE_TURN_GROUND = 2.4;
+export const MOVE_TURN_AIR = 1.7;
+export const MOVE_DECEL = 2;
 export const JUMP_BUFFER_FRAMES = 7;
 export const COYOTE_FRAMES = 6;
 export const WALL_JUMP_X = 5.4;
@@ -70,7 +72,7 @@ export const FOCUS_EXIT_SPEED = 3.8;
 export const FOCUS_CAP = 2;
 export const FOCUS_RECHARGE_LAYERS = 3;
 
-export const CHECKPOINT_HEIGHT = 400;
+export const CHECKPOINT_HEIGHT = 1200;
 
 // Camera pressure makes height and survival the same objective.
 export const CAMERA_ANCHOR_Y = 160;

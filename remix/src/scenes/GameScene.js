@@ -45,6 +45,7 @@ import { drawPlayer } from '../render/playerArt.js';
 import { Sim } from '../sim/sim.js';
 import { storage } from '../storage.js';
 import { installTestHooks } from '../testhooks.js';
+import { normalizeRunRules } from '../rules.js';
 import { TouchHints } from '../touchui.js';
 import { setupCamera, textStyle } from '../utils.js';
 import { ZONES } from '../zones.js';
@@ -75,7 +76,9 @@ export class GameScene extends Phaser.Scene {
 
   init(data) {
     this.resumeSnapshot = data?.checkpoint ?? null;
+    this.rules = normalizeRunRules(this.resumeSnapshot?.rules ?? data?.rules);
     this.assisted = data?.assisted === true;
+    this.continued = data?.continued === true;
     this.replaySeed = Number.isFinite(Number(data?.seed))
       ? Number(data.seed) >>> 0
       : null;
@@ -87,9 +90,9 @@ export class GameScene extends Phaser.Scene {
     const seed = this.resumeSnapshot?.seed ?? (params.has('seed')
       ? Number(params.get('seed')) >>> 0
       : this.replaySeed ?? Date.now() >>> 0);
-    this.sim = new Sim(seed);
+    this.sim = new Sim(seed, { rules: this.rules });
     if (this.resumeSnapshot) this.sim.restore(this.resumeSnapshot);
-    this.checkpointSnapshot = this.resumeSnapshot;
+    this.checkpointSnapshot = this.rules.checkpoints ? this.resumeSnapshot : null;
     this.checkpointHeight = this.resumeSnapshot
       ? Math.floor(this.sim.height / CHECKPOINT_HEIGHT) * CHECKPOINT_HEIGHT
       : 0;
@@ -106,7 +109,7 @@ export class GameScene extends Phaser.Scene {
     this.focusPreviewBranch = new Set();
     this.focusPreviewTopology = -1;
     this.lastFocusCountdownBand = 0;
-    this.bestHeightAtStart = storage.data.bestHeight ?? 0;
+    this.bestHeightAtStart = storage.bestForRules(this.rules);
     this.wireEvents();
 
     this.input.keyboard.on('keydown-M', () => sfx.toggleMute());
@@ -199,8 +202,8 @@ export class GameScene extends Phaser.Scene {
       sfx.focusEnter();
       music.setFocus(true);
     });
-    ev.on('focusAimEnd', () => {
-      sfx.focusRelease();
+    ev.on('focusAimEnd', ({ guarded } = {}) => {
+      if (!guarded) sfx.focusRelease();
       music.setFocus(false);
     });
     ev.on('focusKick', ({ x, y, block }) => {
@@ -223,11 +226,35 @@ export class GameScene extends Phaser.Scene {
       if (affected.length) this.juice.flash(0xf2b544, 0.06, 140);
     });
     ev.on('focusRecharge', () => {
-      sfx.pickup();
+      sfx.focusRecharge();
       const p = this.sim.player;
       this.fx.burst(p.x + p.w / 2, p.y + p.h / 2, COLOR_FOCUS, 7);
+      this.tweens.killTweensOf(this.focusLabel);
+      this.focusLabel.setScale(1.18).setAlpha(1);
+      this.tweens.add({
+        targets: this.focusLabel,
+        scale: 1,
+        alpha: 0.72,
+        duration: 260,
+        ease: 'Sine.easeOut',
+      });
     });
-    ev.on('focusLayer', () => {
+    ev.on('autoGuard', ({ blocks, x, y }) => {
+      sfx.autoGuard();
+      for (const block of blocks) {
+        this.fx.shards(
+          block.x + block.w / 2,
+          block.y + block.h / 2,
+          MATERIAL_COLOR[block.type] ?? COLOR_BLOCK_FILLS[0],
+          5,
+        );
+      }
+      this.fx.burst(x + this.sim.player.w / 2, y + this.sim.player.h / 2, COLOR_FOCUS, 10);
+      this.juice.shake(5, 180, 3);
+      this.juice.flash(COLOR_FOCUS, 0.14, 140);
+    });
+    ev.on('focusLayer', ({ credited }) => {
+      if (!credited) return;
       this.tweens.killTweensOf(this.focusProgressLabel);
       this.focusProgressLabel.setAlpha(1).setScale(1.08);
       this.tweens.add({
@@ -280,13 +307,15 @@ export class GameScene extends Phaser.Scene {
       if (time >= this.deathAt) {
         const best = this.assisted
           ? false
-          : storage.recordRun({ height: sim.height, seed: sim.seed });
+          : storage.recordRun({ height: sim.height, seed: sim.seed, rules: this.rules });
         this.scene.start('GameOver', {
           height: sim.height,
           best,
           seed: sim.seed,
           deathCause: sim.deathCause,
           assisted: this.assisted,
+          continued: this.continued,
+          rules: this.rules,
           checkpoint: this.checkpointSnapshot,
           checkpointHeight: this.checkpointHeight,
         });
@@ -299,6 +328,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   updateCheckpoint() {
+    if (!this.rules.checkpoints) return;
     const sim = this.sim;
     const p = sim.player;
     if (sim.height < this.nextCheckpointHeight) return;
@@ -553,11 +583,11 @@ export class GameScene extends Phaser.Scene {
     const stored = Math.min(FOCUS_RECHARGE_LAYERS, p.focusProgress);
     const remaining = FOCUS_RECHARGE_LAYERS - stored;
     const noun = remaining === 1 ? 'LAYER' : 'LAYERS';
-    const progress = remaining === 0
-      ? p.focus >= FOCUS_CAP
-        ? 'RESERVE READY'
-        : 'DASH READY ON LAND'
-      : `${p.focus >= FOCUS_CAP ? 'RESERVE' : 'DASH'} IN ${remaining} NEW ${noun}`;
+    const progress = p.focus >= FOCUS_CAP
+      ? 'DASHES FULL'
+      : remaining === 0
+        ? 'DASH READY ON LAND'
+        : `DASH IN ${remaining} NEW ${noun}`;
     if (this.focusProgressLabel.text !== progress) {
       this.focusProgressLabel.setText(progress);
     }

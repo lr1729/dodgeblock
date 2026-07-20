@@ -32,6 +32,7 @@ export function installTestHooks(scene) {
     focusAimRemaining: sim.player.focusAimRemaining,
     focusTimer: sim.player.focusTimer,
     focusProgress: sim.player.focusProgress,
+    rules: sim.rules,
     phase: sim.director.phase,
     stormFrames: sim.director.elapsedFrames,
     forecasts: sim.director.forecasts.length,

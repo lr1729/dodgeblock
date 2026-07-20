@@ -39,7 +39,9 @@ early, or let the timer expire, to commit the dash.
   difference is visible before contact.
 - **Beams** are 90 px wide blocks. Their broader roofs and support contacts
   change terrain without adding special hidden rules.
-- **Focus** starts with two charges. Hitting a falling block shatters that one
+- **Focus** starts with two charges. With Auto Guard enabled, a charge
+  automatically absorbs a lethal overhead crush and removes every block in that
+  same impact incident. Hitting a falling block shatters that one
   hazard. Hitting settled terrain from any of the eight directions marks its
   dependent branch for removal.
 - Cutting a fixed block previews its dependent branch during Aim, then keeps it
@@ -50,16 +52,21 @@ early, or let the timer expire, to commit the dash.
   upward head-corner catches are corrected without cancelling the jump.
 - The HUD states how many new stable layers remain before the next dash. Focus
   recharges on the landing frame after progress through each three-layer
-  threshold. At most one threshold is banked while charges are full, and
-  progress cannot advance during Aim.
+  threshold. Progress made while charges are full is discarded, and progress
+  cannot advance during Aim.
 - The storm commits position, width, and material 18 frames before the drop.
   A cheap local safety heuristic rejects only obvious synchronized crushes;
   most terrain remains random and strategically imperfect.
 - Difficulty comes from rising density, camera pressure, and correlated storm
   phases rather than unbounded gravity or unreadable physics.
-- Every 400 height arms an in-memory checkpoint. Continuing from the death
+- Every 1,200 height arms an in-memory checkpoint when the run rule is enabled.
+  Continuing from the death
   screen restores the exact simulation state and marks the run as assisted, so
-  it cannot replace the one-life best.
+  it cannot replace the one-life best. Auto Guard and Hardcore keep separate
+  best heights.
+
+The home screen exposes Checkpoints and Auto Guard as persistent run rules. Auto
+Guard makes Focus charges double as health; Hardcore preserves one-hit crushes.
 
 See [`DESIGN.md`](./DESIGN.md) for the simulation contract and design rationale.
 

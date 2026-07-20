@@ -144,22 +144,15 @@ class Sfx {
     this.tone(760, 680, 0.045, 'sine', 0.055);
   }
 
-  // warm two-note chime for shield/speed/jump/boost
-  pickup() {
-    this.tone(523, 523, 0.1, 'sine', 0.14);
-    this.tone(784, 784, 0.16, 'sine', 0.13, 0.07);
+  focusRecharge() {
+    this.tone(880, 1320, 0.11, 'triangle', 0.18);
+    this.tone(1320, 1760, 0.15, 'sine', 0.15, 0.055);
   }
 
-  // brighter double ding for coins
-  coin() {
-    this.tone(988, 988, 0.08, 'sine', 0.12);
-    this.tone(1319, 1319, 0.14, 'sine', 0.11, 0.06);
-  }
-
-  // shield eating a block: soft pop
-  shieldPop() {
-    this.noise(0.06, 0.12, 800);
-    this.tone(280, 140, 0.12, 'sine', 0.12);
+  autoGuard() {
+    this.noise(0.09, 0.14, 1200);
+    this.tone(320, 135, 0.14, 'triangle', 0.17);
+    this.tone(900, 1250, 0.1, 'sine', 0.11, 0.03);
   }
 
   // gentle descending "whomp", not a buzzer
@@ -168,17 +161,6 @@ class Sfx {
     this.tone(150, 70, 0.5, 'sine', 0.13, 0.05);
   }
 
-  // --- remix sounds ---
-  // mix discipline: sub-100Hz is reserved for the three big impacts (spike,
-  // crest, death); grazes/phases live in high noise; melodic 400-1300Hz.
-
-  // "shhk" — air ripping past
-  graze(perfect) {
-    this.noise(0.06, 0.09, 3200);
-    if (perfect) this.tone(1200, 1400, 0.09, 'sine', 0.11);
-  }
-
-  // airy whoosh
   dash() {
     this.noise(0.12, 0.1, 2200);
     this.tone(600, 900, 0.12, 'triangle', 0.09);
@@ -203,106 +185,9 @@ class Sfx {
     this.noise(0.05, 0.08, 600);
   }
 
-  // chunky "zzip" per phased block
-  dashPhase() {
-    this.tone(220, 260, 0.05, 'square', 0.07);
-  }
-
-  spikeWindup() {
-    this.tone(500, 740, 0.09, 'sine', 0.07);
-  }
-
-  // the lowest, heaviest sound in the palette
-  spikeShatter() {
-    this.tone(50, 50, 0.28, 'sine', 0.22);
-    this.tone(200, 90, 0.16, 'square', 0.09);
-    this.noise(0.12, 0.16, 900);
-  }
-
-  spikeThud() {
-    this.tone(90, 60, 0.1, 'sine', 0.14);
-    this.noise(0.05, 0.08, 500);
-  }
-
-  // mid-air block shatter during a spike drop
   blockBreak() {
     this.tone(300, 150, 0.08, 'square', 0.08);
     this.noise(0.06, 0.1, 1500);
-  }
-
-  // ridden block slams home — deep thump
-  crestThump() {
-    this.tone(60, 40, 0.3, 'sine', 0.2);
-    this.noise(0.1, 0.12, 400);
-  }
-
-  // stacked-fifth chime for the super jump
-  crestJump() {
-    this.tone(440, 440, 0.2, 'triangle', 0.12);
-    this.tone(660, 660, 0.26, 'triangle', 0.11, 0.03);
-  }
-
-  // pentatonic ladder — every Heat gain plays the next step up (the Peggle
-  // trick); resets as Heat decays because the step IS the heat value
-  ladder(step) {
-    const NOTES = [523, 587, 659, 784, 880, 1047, 1175, 1319];
-    const f = NOTES[Math.max(0, Math.min(step - 1, NOTES.length - 1))];
-    this.tone(f, f, 0.14, 'triangle', 0.09);
-  }
-
-  heatDown() {
-    this.tone(400, 300, 0.12, 'triangle', 0.06);
-  }
-
-  // zone fanfare: rising major triad
-  zoneUp() {
-    this.tone(523, 523, 0.16, 'triangle', 0.12);
-    this.tone(659, 659, 0.16, 'triangle', 0.12, 0.09);
-    this.tone(784, 784, 0.28, 'triangle', 0.12, 0.18);
-  }
-
-  // --- event telegraphs ---
-
-  siren() {
-    this.tone(520, 780, 0.5, 'sine', 0.09);
-    this.tone(780, 520, 0.5, 'sine', 0.09, 0.5);
-    this.tone(520, 780, 0.5, 'sine', 0.09, 1.0);
-  }
-
-  rumble() {
-    this.tone(45, 38, 1.6, 'sine', 0.2);
-    this.noise(1.2, 0.08, 220);
-  }
-
-  whistle() {
-    this.tone(600, 1900, 1.6, 'sine', 0.07);
-  }
-
-  gustWhoosh() {
-    this.noise(0.9, 0.1, 1400);
-  }
-
-  shimmer() {
-    for (let i = 0; i < 4; i++) {
-      const f = [1047, 1319, 1568, 2093][i];
-      this.tone(f, f, 0.18, 'sine', 0.06, i * 0.12);
-    }
-  }
-
-  // block spawning inside a whiteout — the audio you dodge by
-  spawnTick() {
-    this.tone(1100, 950, 0.04, 'square', 0.06);
-  }
-
-  payoffChime() {
-    this.tone(880, 880, 0.12, 'triangle', 0.12);
-    this.tone(1109, 1109, 0.14, 'triangle', 0.11, 0.08);
-    this.tone(1319, 1319, 0.2, 'triangle', 0.11, 0.16);
-  }
-
-  meteorBoom() {
-    this.tone(55, 40, 0.4, 'sine', 0.22);
-    this.noise(0.25, 0.18, 700);
   }
 }
 

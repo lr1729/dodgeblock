@@ -25,7 +25,18 @@ import { Director } from './director.js';
 import { createEmitter } from './events.js';
 import { Player } from './player.js';
 import { Rng } from './rng.js';
-import { constrain, rectrect, rectrectStrict } from './util.js';
+import { normalizeRunRules } from '../rules.js';
+import { constrain, rectrectStrict } from './util.js';
+
+const CONTACT_EPSILON = 0.001;
+
+function overlapsX(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x;
+}
+
+function overlapsY(a, b) {
+  return a.y < b.y + b.h && a.y + a.h > b.y;
+}
 
 export const NEUTRAL_INPUT = Object.freeze({
   up: false,
@@ -41,7 +52,7 @@ export const NEUTRAL_INPUT = Object.freeze({
 });
 
 export class Sim {
-  constructor(seed, { director = true } = {}) {
+  constructor(seed, { director = true, rules } = {}) {
     this.seed = seed >>> 0;
     this.rng = new Rng(this.seed);
     this.events = createEmitter();
@@ -49,6 +60,7 @@ export class Sim {
     this.blocks = new BlockManager(this);
     this.director = new Director(this);
     this.directorEnabled = director;
+    this.rules = normalizeRunRules(rules);
 
     this.frame = 0;
     this.camY = 0;
@@ -75,6 +87,7 @@ export class Sim {
       height: this.height,
       blockRate: this.blockRate,
       jumpBuffer: this.jumpBuffer,
+      rules: this.rules,
       player: {
         ...player,
         supportBlockId: supportBlock?.id ?? null,
@@ -92,6 +105,7 @@ export class Sim {
     this.height = state.height;
     this.blockRate = state.blockRate;
     this.jumpBuffer = state.jumpBuffer;
+    this.rules = normalizeRunRules(state.rules ?? this.rules);
     this.dead = false;
     this.deathCause = null;
     const byId = this.blocks.restore(state.blocks);
@@ -148,17 +162,23 @@ export class Sim {
 
     if (this.jumpBuffer > 0) this.jumpBuffer = Math.max(0, this.jumpBuffer - worldScale);
     this.blocks.update(worldScale);
+    this.resolveIncomingBlockMotion();
+    if (this.dead) {
+      this.events.emit('death', { cause: this.deathCause });
+      return;
+    }
     if (p.focusTimer > 0) {
       this.updateFocus();
     } else {
       p.wallSide = 0;
-      this.landOrSquishPass(0);
+      const fromX = p.x;
       p.updateX(worldScale);
-      this.wallPass();
-      p.updateWallCoyote(worldScale);
+      this.resolvePlayerX(fromX);
+      const fromY = p.y;
       p.updateY(inp.up, inp.down, worldScale);
-      if (rectrect(p, GROUND)) this.landOnGround();
-      this.landOrSquishPass(-0.1);
+      this.resolvePlayerY(fromY);
+      this.detectWallContact();
+      p.updateWallCoyote(worldScale);
       p.clampX();
     }
 
@@ -206,6 +226,7 @@ export class Sim {
     p.focus--;
     p.focusAimTimer = 1;
     p.focusAimRemaining = FOCUS_AIM_MAX_FRAMES;
+    p.focusCommittedFrame = -1;
     p.focusDX = dx;
     p.focusDY = dy;
     this.events.emit('focusAimStart', { x: p.x, y: p.y, focus: p.focus });
@@ -224,6 +245,7 @@ export class Sim {
     p.focusAimTimer = 0;
     p.focusAimRemaining = 0;
     p.focusTimer = FOCUS_FRAMES;
+    p.focusCommittedFrame = this.frame;
     p.xVel = 0;
     p.yVel = 0;
     this.events.emit('focusAimEnd', { heldFrames });
@@ -332,26 +354,70 @@ export class Sim {
     this.events.emit('focusEnd', { reason, x: p.x, y: p.y });
   }
 
-  landOnGround() {
+  resolveIncomingBlockMotion() {
     const p = this.player;
-    p.y = GROUND.y - p.h;
-    p.yVel = 0;
-    p.offGround = 0;
-    p.supportBlock = null;
-    p.clearWallCoyote();
-    p.lastWallJumpSide = 0;
-  }
+    const moving = this.blocks.blocks
+      .filter((b) => !b.fixed || b.fixedAtFrame === this.frame)
+      .sort((a, b) => a.id - b.id);
+    const crushes = [];
 
-  landOrSquishPass(offset) {
-    const p = this.player;
-    const blocks = this.blocks.blocks;
-    for (let i = 0; i < blocks.length; i++) {
-      const b = blocks[i];
-      if (!rectrect(p, b)) continue;
+    for (const b of moving) {
+      if (!overlapsX(p, b)) continue;
+      const previousBottom = (b.previousY ?? b.y) + b.h;
+      const currentBottom = b.y + b.h;
+      const crossedHead = previousBottom <= p.y + CONTACT_EPSILON &&
+        currentBottom >= p.y - CONTACT_EPSILON;
+      const penetratingFromAbove = rectrectStrict(p, b) &&
+        (b.previousY ?? b.y) < p.y + p.h / 2;
+      const playerCenterX = p.x + p.w / 2;
+      const horizontallyOverhead = playerCenterX > b.x && playerCenterX < b.x + b.w;
+      const impactVelocity = b.fixed ? b.impactVel : b.yVel;
+      if (
+        b.spec.lethal &&
+        impactVelocity > SQUISH_VEL &&
+        horizontallyOverhead &&
+        (crossedHead || penetratingFromAbove)
+      ) {
+        const travel = Math.max(CONTACT_EPSILON, currentBottom - previousBottom);
+        const time = constrain((p.y - previousBottom) / travel, 0, 1);
+        crushes.push({ block: b, time });
+      }
+    }
 
-      const contact = this.contactDirection(b);
-      if (contact === 'up') {
-        p.y = b.y - p.h + (b.fixed ? offset : 0);
+    if (crushes.length) {
+      crushes.sort((a, b) => a.time - b.time || a.block.id - b.block.id);
+      if (!this.tryAutoGuard(crushes.map(({ block }) => block))) {
+        this.kill('squished');
+        return;
+      }
+    }
+
+    for (const b of moving) {
+      if (!this.blocks.blocks.includes(b) || !rectrectStrict(p, b)) continue;
+      const blockCenter = b.x + b.w / 2;
+      const playerCenter = p.x + p.w / 2;
+      if (p.y < (b.previousY ?? b.y) - CONTACT_EPSILON) continue;
+      if (playerCenter > b.x && playerCenter < b.x + b.w && b.y < p.y) {
+        const below = b.y + b.h;
+        if (this.canPlacePlayer(p.x, below, b)) {
+          p.y = below;
+          if (p.yVel > 0) p.yVel = 0;
+          continue;
+        }
+      }
+      const sides = playerCenter <= blockCenter
+        ? [b.x - p.w, b.x + b.w]
+        : [b.x + b.w, b.x - p.w];
+      const openSide = sides.find((x) => this.canPlacePlayer(x, p.y, b));
+      if (openSide !== undefined) {
+        p.x = openSide;
+        p.xVel = 0;
+        continue;
+      }
+
+      const above = b.y - p.h;
+      if (this.canPlacePlayer(p.x, above, b)) {
+        p.y = above;
         p.yVel = b.fixed ? 0 : -b.yVel;
         p.offGround = 0;
         p.supportBlock = b;
@@ -360,86 +426,177 @@ export class Sim {
         continue;
       }
 
-      if (
-        contact === 'down' &&
-        b.fixed &&
-        p.yVel > 0 &&
-        this.tryUpwardCornerCorrection(b)
-      ) {
-        continue;
+      const impactVelocity = b.fixed ? b.impactVel : b.yVel;
+      if (b.spec.lethal && impactVelocity > SQUISH_VEL) {
+        if (!this.tryAutoGuard([b])) {
+          this.kill('squished');
+          return;
+        }
+      } else {
+        const below = b.y + b.h;
+        if (this.canPlacePlayer(p.x, below, b)) {
+          p.y = below;
+          if (p.yVel > 0) p.yVel = 0;
+        }
       }
+    }
+  }
 
-      if (
-        contact === 'down' &&
-        (!b.fixed || b.fixedAtFrame === this.frame) &&
-        b.spec.lethal &&
-        (b.fixed ? b.impactVel : b.yVel) > SQUISH_VEL
-      ) {
-        this.kill('squished');
+  canPlacePlayer(x, y, ignoredBlock = null) {
+    const p = this.player;
+    if (x < PLAYER_MIN_X || x > PLAYER_MAX_X - p.w) return false;
+    const probe = { x, y, w: p.w, h: p.h };
+    return !this.blocks.blocks.some(
+      (block) => block !== ignoredBlock && rectrectStrict(probe, block),
+    ) && !rectrectStrict(probe, GROUND);
+  }
+
+  tryAutoGuard(blocks) {
+    const p = this.player;
+    if (!this.rules.autoGuard) return false;
+    const usedAimCharge = p.focusAimTimer > 0 || p.focusCommittedFrame === this.frame;
+    const sameIncident = p.lastGuardFrame === this.frame;
+    if (!usedAimCharge && !sameIncident && p.focus <= 0) return false;
+
+    if (!usedAimCharge && !sameIncident) p.focus--;
+    if (p.focusAimTimer > 0) {
+      const heldFrames = p.focusAimTimer;
+      p.focusAimTimer = 0;
+      p.focusAimRemaining = 0;
+      this.events.emit('focusAimEnd', { heldFrames, guarded: true });
+    }
+    p.focusTimer = 0;
+    p.focusCommittedFrame = -1;
+    p.lastGuardFrame = this.frame;
+    p.yVel = Math.max(1.8, p.yVel);
+    const incident = new Set();
+    for (const block of blocks) {
+      incident.add(block);
+      if (block.fixed) {
+        for (const dependent of this.blocks.dependentBranch(block)) incident.add(dependent);
+      }
+    }
+    const removed = [];
+    for (const block of [...incident].sort((a, b) => a.id - b.id)) {
+      if (!this.blocks.blocks.includes(block)) continue;
+      removed.push({ ...block });
+      this.blocks.remove(block);
+    }
+    this.events.emit('autoGuard', { blocks: removed, focus: p.focus, x: p.x, y: p.y });
+    return true;
+  }
+
+  resolvePlayerX(fromX) {
+    const p = this.player;
+    const dx = p.x - fromX;
+    if (Math.abs(dx) <= CONTACT_EPSILON) return;
+    const candidates = [];
+    for (const b of this.blocks.blocks) {
+      if (!overlapsY(p, b)) continue;
+      if (dx > 0 && fromX + p.w <= b.x + CONTACT_EPSILON && p.x + p.w >= b.x) {
+        candidates.push({ block: b, face: b.x - p.w, time: (b.x - (fromX + p.w)) / dx });
+      } else if (dx < 0 && fromX >= b.x + b.w - CONTACT_EPSILON && p.x <= b.x + b.w) {
+        candidates.push({ block: b, face: b.x + b.w, time: ((b.x + b.w) - fromX) / dx });
+      }
+    }
+    candidates.sort((a, b) => a.time - b.time || a.block.id - b.block.id);
+    const hit = candidates[0];
+    if (!hit) return;
+    p.x = hit.face;
+    p.xVel = 0;
+    p.rememberWall(dx > 0 ? 1 : -1);
+  }
+
+  resolvePlayerY(fromY, corrected = false) {
+    const p = this.player;
+    const dy = p.y - fromY;
+    if (Math.abs(dy) <= CONTACT_EPSILON) return;
+    const candidates = [];
+
+    if (dy > 0) {
+      if (fromY + p.h <= GROUND.y + CONTACT_EPSILON && p.y + p.h >= GROUND.y) {
+        candidates.push({ block: null, face: GROUND.y - p.h, time: (GROUND.y - (fromY + p.h)) / dy });
+      }
+      for (const b of this.blocks.blocks) {
+        if (!overlapsX(p, b)) continue;
+        const oldTop = b.fixed ? b.y : b.previousY ?? b.y;
+        if (fromY + p.h <= oldTop + CONTACT_EPSILON && p.y + p.h >= b.y) {
+          candidates.push({
+            block: b,
+            face: b.y - p.h,
+            time: constrain((oldTop - (fromY + p.h)) / Math.max(CONTACT_EPSILON, dy + oldTop - b.y), 0, 1),
+          });
+        } else if (
+          rectrectStrict(p, b) &&
+          fromY + p.h / 2 <= (b.previousY ?? b.y) + b.h / 2
+        ) {
+          candidates.push({ block: b, face: b.y - p.h, time: 0 });
+        }
+      }
+    } else {
+      for (const b of this.blocks.blocks) {
+        if (!overlapsX(p, b)) continue;
+        const bottom = b.y + b.h;
+        if (fromY >= bottom - CONTACT_EPSILON && p.y <= bottom) {
+          candidates.push({ block: b, face: bottom, time: (bottom - fromY) / dy });
+        }
+      }
+    }
+
+    candidates.sort((a, b) => a.time - b.time || (a.block?.id ?? 0) - (b.block?.id ?? 0));
+    const hit = candidates[0];
+    if (!hit) return;
+
+    if (dy < 0) {
+      if (!corrected && this.tryUpwardCornerCorrection(hit.block)) {
+        this.resolvePlayerY(fromY, true);
         return;
       }
-
-      this.resolveSoftOverlap(b, contact);
-    }
-  }
-
-  contactDirection(b) {
-    const p = this.player;
-    const left = p.x + p.w - b.x;
-    const right = b.x + b.w - p.x;
-    const up = p.y + p.h - b.y;
-    const down = b.y + b.h - p.y;
-    const horizontal = Math.min(left, right);
-    const vertical = Math.min(up, down);
-    // Horizontal wins corner ties, making a glancing shoulder contact a push
-    // rather than an arbitrary crush.
-    if (horizontal <= vertical) return left <= right ? 'left' : 'right';
-    return up <= down ? 'up' : 'down';
-  }
-
-  resolveSoftOverlap(b, contact = this.contactDirection(b)) {
-    const p = this.player;
-    if (contact === 'left') {
-      p.x = b.x - p.w - 0.1;
-      p.xVel = 0;
-    } else if (contact === 'right') {
-      p.x = b.x + b.w + 0.1;
-      p.xVel = 0;
-    } else if (contact === 'up') {
-      p.y = b.y - p.h - 0.1;
-      if (p.yVel < 0) p.yVel = 0;
-    } else {
-      p.y = b.y + b.h + 0.1;
+      p.y = hit.face;
       if (p.yVel > 0) p.yVel = 0;
+      return;
     }
+
+    p.y = hit.face;
+    p.yVel = hit.block?.fixed === false ? -hit.block.yVel : 0;
+    p.offGround = 0;
+    p.supportBlock = hit.block;
+    p.lastWallJumpSide = 0;
+    p.clearWallCoyote();
+  }
+
+  detectWallContact() {
+    const p = this.player;
+    const contacts = [];
+    if (Math.abs(p.x - PLAYER_MIN_X) <= CONTACT_EPSILON) contacts.push({ side: -1, id: -2 });
+    if (Math.abs(p.x + p.w - PLAYER_MAX_X) <= CONTACT_EPSILON) contacts.push({ side: 1, id: -1 });
+    for (const b of this.blocks.blocks) {
+      if (!overlapsY(p, b)) continue;
+      if (Math.abs(p.x + p.w - b.x) <= CONTACT_EPSILON) contacts.push({ side: 1, id: b.id });
+      if (Math.abs(p.x - (b.x + b.w)) <= CONTACT_EPSILON) contacts.push({ side: -1, id: b.id });
+    }
+    if (!contacts.length) return;
+    contacts.sort((a, b) => a.id - b.id);
+    const preferred = contacts.find(({ side }) => side === p.wallCoyoteSide) ?? contacts[0];
+    p.rememberWall(preferred.side);
   }
 
   wallPass() {
-    const p = this.player;
-    const blocks = this.blocks.blocks;
-    for (let i = 0; i < blocks.length; i++) {
-      const b = blocks[i];
-      if (!b.fixed || !rectrect(p, b)) continue;
-      const side = p.x + p.w / 2 <= b.x + b.w / 2 ? 1 : -1;
-      p.x = p.originalPos;
-      p.xVel = 0;
-      p.rememberWall(side);
-      return;
-    }
+    this.detectWallContact();
   }
 
   tryUpwardCornerCorrection(block) {
     const p = this.player;
     const candidates = [
-      { x: block.x - p.w - 0.1, direction: -1 },
-      { x: block.x + block.w + 0.1, direction: 1 },
+      { x: block.x - p.w, direction: -1 },
+      { x: block.x + block.w, direction: 1 },
     ]
       .map((candidate) => ({
         ...candidate,
         distance: Math.abs(candidate.x - p.x),
         preference: candidate.direction === Math.sign(p.xVel) ? 0 : 1,
       }))
-      .filter((candidate) => candidate.distance <= CORNER_CORRECTION_PX + 0.1)
+      .filter((candidate) => candidate.distance <= CORNER_CORRECTION_PX + CONTACT_EPSILON)
       .sort((a, b) => a.distance - b.distance || a.preference - b.preference);
 
     for (const candidate of candidates) {
@@ -470,9 +627,10 @@ export class Sim {
     const layer = Math.max(0, Math.floor((GROUND.y - (p.y + p.h) + 1) / BLOCK_H));
     if (layer > p.highestStableLayer) {
       const gained = layer - p.highestStableLayer;
-      p.focusProgress += gained;
+      const credited = p.focus < FOCUS_CAP;
       p.highestStableLayer = layer;
-      this.events.emit('focusLayer', { gained, layer });
+      this.events.emit('focusLayer', { gained, layer, credited });
+      if (credited) p.focusProgress += gained;
     }
     while (p.focus < FOCUS_CAP && p.focusProgress >= FOCUS_RECHARGE_LAYERS) {
       p.focus++;
@@ -480,7 +638,7 @@ export class Sim {
       this.events.emit('focusRecharge', { focus: p.focus, layer });
     }
     if (p.focus >= FOCUS_CAP) {
-      p.focusProgress = Math.min(p.focusProgress, FOCUS_RECHARGE_LAYERS);
+      p.focusProgress = 0;
     }
     p.nextFocusLayer = p.highestStableLayer +
       Math.max(0, FOCUS_RECHARGE_LAYERS - p.focusProgress);
@@ -522,6 +680,7 @@ export class Sim {
       p.focusAimRemaining,
       p.focusProgress,
       p.nextFocusLayer,
+      this.rules.autoGuard ? 1 : 0,
       this.director.phase,
       this.rng.s,
     ].join('|');

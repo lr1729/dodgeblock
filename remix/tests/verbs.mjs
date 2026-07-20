@@ -45,6 +45,10 @@ function quietSim(seed = 1) {
   return new Sim(seed, { director: false });
 }
 
+function hardcoreSim(seed = 1) {
+  return new Sim(seed, { director: false, rules: { autoGuard: false } });
+}
+
 function eventLog(sim) {
   const log = [];
   sim.events.tap = (name, payload) => log.push({ name, payload });
@@ -100,15 +104,23 @@ test('movement reaches speed quickly and reverses responsively', () => {
   sim.step(N);
   const startX = sim.player.x;
 
-  for (let i = 0; i < 3; i++) sim.step({ ...N, right: true });
+  for (let i = 0; i < 4; i++) sim.step({ ...N, right: true });
   approx(sim.player.xVel, MOVE_SPEED);
   assert.ok(sim.player.x > startX + 10);
 
-  for (let i = 0; i < 3; i++) sim.step({ ...N, left: true });
-  assert.ok(sim.player.xVel < 0, `velocity after reversal was ${sim.player.xVel}`);
+  for (let i = 0; i < 7; i++) sim.step({ ...N, left: true });
+  approx(sim.player.xVel, -MOVE_SPEED);
 
-  for (let i = 0; i < 10; i++) sim.step(N);
-  assert.ok(Math.abs(sim.player.xVel) < 0.05, `release velocity was ${sim.player.xVel}`);
+  for (let i = 0; i < 3; i++) sim.step(N);
+  approx(sim.player.xVel, 0);
+
+  const airborne = new Player();
+  airborne.offGround = 20;
+  for (let i = 0; i < 5; i++) airborne.move(1);
+  approx(airborne.xVel, MOVE_SPEED);
+  airborne.xVel = 0;
+  airborne.move(1, 0.1);
+  approx(airborne.xVel, 0.12);
 });
 
 test('holding jump repeats whenever stable footing returns', () => {
@@ -364,7 +376,7 @@ test('Focus Aim spends its charge immediately and auto-commits after 1.5 seconds
 });
 
 test('a falling block kills only on a descending overhead contact', () => {
-  const sim = quietSim(24);
+  const sim = hardcoreSim(24);
   sim.player.x = 200;
   sim.player.y = 100;
   sim.player.offGround = 10;
@@ -374,7 +386,7 @@ test('a falling block kills only on a descending overhead contact', () => {
 });
 
 test('a block that seats on terrain still crushes the player on its impact frame', () => {
-  const sim = quietSim(243);
+  const sim = hardcoreSim(243);
   const p = sim.player;
   p.x = 200;
   p.y = GROUND.y - p.h;
@@ -416,6 +428,85 @@ test('top contact with falling wood remains physically supported', () => {
   assert.equal(sim.dead, false);
   assert.equal(p.supportBlock, wood);
   assert.equal(wood.fixed, false);
+});
+
+test('Auto Guard spends one Focus charge for a simultaneous crush incident', () => {
+  const sim = quietSim(244);
+  const log = eventLog(sim);
+  const p = sim.player;
+  p.x = 200;
+  p.y = 100;
+  p.offGround = 10;
+  const first = sim.blocks.spawnAt(190, 65, 'wood', { yVel: 4, shade: 0 });
+  const second = sim.blocks.spawnAt(205, 65, 'wood', { yVel: 4, shade: 1 });
+
+  sim.frame = 1;
+  first.previousY = 65;
+  first.y = 70;
+  second.previousY = 65;
+  second.y = 70;
+  sim.resolveIncomingBlockMotion();
+
+  assert.equal(sim.dead, false);
+  assert.equal(p.focus, FOCUS_CAP - 1);
+  assert.equal(sim.blocks.blocks.includes(first), false);
+  assert.equal(sim.blocks.blocks.includes(second), false);
+  assert.equal(log.filter(({ name }) => name === 'autoGuard').length, 1);
+});
+
+test('an Aim charge converts into Auto Guard without charging twice', () => {
+  const sim = quietSim(245);
+  const p = sim.player;
+  p.x = 200;
+  p.y = 100;
+  p.offGround = 10;
+  sim.step({ ...N, focusPressed: true, focusHeld: true, focusDirX: 1 });
+  assert.equal(p.focus, FOCUS_CAP - 1);
+  sim.blocks.spawnAt(190, 65, 'wood', { yVel: 4, shade: 0 });
+
+  sim.step({ ...N, focusHeld: true, focusDirX: 1 });
+
+  assert.equal(sim.dead, false);
+  assert.equal(p.focus, FOCUS_CAP - 1);
+  assert.equal(p.focusAimTimer, 0);
+});
+
+test('a just-committed Aim charge still guards its release frame', () => {
+  const sim = quietSim(246);
+  const p = sim.player;
+  p.focus = 1;
+  p.x = 200;
+  p.y = 100;
+  p.offGround = 10;
+  sim.step({ ...N, focusPressed: true, focusHeld: true, focusDirX: 1 });
+  assert.equal(p.focus, 0);
+  sim.blocks.spawnAt(190, 65, 'wood', { yVel: 4, shade: 0 });
+
+  sim.step({ ...N, focusReleased: true, focusDirX: 1 });
+
+  assert.equal(sim.dead, false);
+  assert.equal(p.focus, 0);
+  assert.equal(p.focusTimer, 0, 'guard did not cancel the pending dash');
+});
+
+test('a later crush consumes another charge despite visual recovery', () => {
+  const sim = quietSim(247);
+  const p = sim.player;
+  p.x = 200;
+  p.y = 100;
+  p.offGround = 10;
+  sim.blocks.spawnAt(190, 65, 'wood', { yVel: 4, shade: 0 });
+  sim.step(N);
+  assert.equal(p.focus, FOCUS_CAP - 1);
+
+  p.x = 200;
+  p.y = 100;
+  p.offGround = 10;
+  sim.blocks.spawnAt(190, 65, 'wood', { yVel: 4, shade: 0 });
+  sim.step(N);
+
+  assert.equal(sim.dead, false);
+  assert.equal(p.focus, 0);
 });
 
 test('Focus bonks on the ground', () => {
@@ -482,16 +573,45 @@ test('wall contact side comes from geometry even without horizontal motion', () 
   p.xVel = 0;
 
   p.x = block.x - p.w;
-  p.originalPos = p.x;
   p.wallSide = 0;
   sim.wallPass();
   assert.equal(p.wallSide, 1, 'block on the right produced the wrong wall side');
 
   p.x = block.x + block.w;
-  p.originalPos = p.x;
   p.wallSide = 0;
   sim.wallPass();
   assert.equal(p.wallSide, -1, 'block on the left produced the wrong wall side');
+});
+
+test('horizontal collisions project to exact faces independent of fractional approach', () => {
+  for (const start of [101.25, 103.75, 106.5]) {
+    const sim = quietSim(620);
+    const block = fixedBlock(sim, 10, 3, 'wood');
+    const p = sim.player;
+    p.y = block.y + 5;
+    p.x = block.x - p.w - start % 4 - 1;
+    const fromX = p.x;
+    p.x += 8;
+    sim.resolvePlayerX(fromX);
+    approx(p.x, block.x - p.w);
+  }
+});
+
+test('horizontal collision result does not depend on block array order', () => {
+  const run = (reverse) => {
+    const sim = quietSim(623);
+    const first = fixedBlock(sim, 10, 3, 'wood');
+    fixedBlock(sim, 14, 3, 'wood');
+    if (reverse) sim.blocks.blocks.reverse();
+    const p = sim.player;
+    p.y = first.y + 5;
+    p.x = first.x - p.w - 5;
+    const fromX = p.x;
+    p.x += 12;
+    sim.resolvePlayerX(fromX);
+    return { x: p.x, xVel: p.xVel, wallSide: p.wallSide };
+  };
+  assert.deepEqual(run(true), run(false));
 });
 
 test('wall jump remains available for four grace frames after leaving contact', () => {
@@ -718,23 +838,29 @@ test('held auto-hop earns recharge on the landing frame', () => {
   assert.ok(p.offGround > 0, 'held jump did not continue after the recharge landing');
 });
 
-test('full Focus banks at most one visible recharge threshold', () => {
+test('full Focus discards recharge progress instead of banking a reserve', () => {
   const sim = quietSim(83);
   const tower = [];
-  for (let layer = 1; layer <= 12; layer++) tower[layer] = fixedBlock(sim, 9, layer);
+  for (let layer = 1; layer <= 15; layer++) tower[layer] = fixedBlock(sim, 9, layer);
   placeOnLayer(sim, 9, 12, tower[12]);
-  sim.step(N);
-  assert.equal(sim.player.focus, FOCUS_CAP);
-  assert.equal(sim.player.focusProgress, FOCUS_RECHARGE_LAYERS);
-
-  sim.player.focus--;
   sim.step(N);
   assert.equal(sim.player.focus, FOCUS_CAP);
   assert.equal(sim.player.focusProgress, 0);
 
   sim.player.focus--;
   sim.step(N);
-  assert.equal(sim.player.focus, FOCUS_CAP - 1, 'hidden thresholds refunded another charge');
+  assert.equal(sim.player.focus, FOCUS_CAP - 1);
+  assert.equal(sim.player.focusProgress, 0);
+
+  placeOnLayer(sim, 9, 14, tower[14]);
+  sim.step(N);
+  assert.equal(sim.player.focus, FOCUS_CAP - 1);
+  assert.equal(sim.player.focusProgress, 2);
+
+  placeOnLayer(sim, 9, 15, tower[15]);
+  sim.step(N);
+  assert.equal(sim.player.focus, FOCUS_CAP);
+  assert.equal(sim.player.focusProgress, 0);
 });
 
 test('jump height does not increase score or stable-layer recharge progress', () => {
@@ -789,7 +915,7 @@ test('player and block velocities respect terminal caps and arena bounds', () =>
   approx(gravel.yVel, BLOCK_FALL_CAP);
 });
 
-test('falling-block pushout cannot move the player beyond the arena', () => {
+test('falling-block pushout at a rail chooses the open in-bounds side', () => {
   const sim = quietSim(111);
   const p = sim.player;
   p.x = PLAYER_MAX_X - p.w;
@@ -800,7 +926,8 @@ test('falling-block pushout cannot move the player beyond the arena', () => {
 
   sim.step({ ...N, right: true });
 
-  assert.equal(p.x, PLAYER_MAX_X - p.w);
+  assert.equal(p.x, 700);
+  assert.ok(p.x >= PLAYER_MIN_X && p.x + p.w <= PLAYER_MAX_X);
   assert.equal(p.xVel, 0);
 });
 
@@ -815,7 +942,7 @@ test('ceiling contact cancels vertical motion without killing air control', () =
 
   for (let i = 0; i < 3; i++) sim.step({ ...N, right: true, up: true });
   assert.ok(p.y >= ceiling.y + ceiling.h, `player remained inside ceiling at ${p.y}`);
-  assert.ok(p.xVel > 4, `ceiling contact erased horizontal control: ${p.xVel}`);
+  assert.ok(p.xVel >= 3.5, `ceiling contact erased horizontal control: ${p.xVel}`);
   assert.ok(p.yVel <= 0, `upward velocity survived ceiling contact: ${p.yVel}`);
 });
 
@@ -831,7 +958,7 @@ test('old terrain remains solid after more than 360 newer blocks', () => {
   p.offGround = 20;
   sim.step(N);
 
-  approx(p.y, oldSupport.y - p.h - 0.1);
+  approx(p.y, oldSupport.y - p.h);
   assert.equal(p.supportBlock, oldSupport);
 });
 
