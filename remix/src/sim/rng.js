@@ -1,5 +1,5 @@
 // Deterministic RNG for the simulation. One mulberry32 stream drives ALL sim
-// randomness (spawn x, shades, gilded rolls, director phases, event rolls) so
+// randomness (block shades and director choices) so
 // a run is a pure function of (seed, input history). Render-side code keeps
 // using Math.random — cosmetic randomness must never perturb the sim stream.
 
@@ -45,7 +45,7 @@ export class Rng {
   }
 }
 
-// xmur3 string hash → 32-bit seed; powers daily-seed mode ('2026-07-15')
+// xmur3 string hash -> 32-bit seed for stable named/debug seeds.
 export function seedFromString(str) {
   let h = 1779033703 ^ str.length;
   for (let i = 0; i < str.length; i++) {

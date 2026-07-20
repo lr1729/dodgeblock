@@ -1,46 +1,76 @@
-# BLOCKSTORM — a DodgeBlock remix
+# DodgeBlock Remix
 
-A bold reimagining of DodgeBlock. Same soul — blocks rain from the sky, they
-stack into a tower, you climb to outrun the rising camera — but the storm is
-now the fuel: every falling block is a resource, a vehicle, and a jackpot.
+DodgeBlock is Tetris from inside the pile. Every falling block is first a
+hazard and then persistent terrain. The only objective is stable height:
+survive, shape useful routes, and keep climbing before the rising camera
+removes the bottom of the level.
 
-## How it plays
+The redesign preserves uncertain pile management while giving the player
+reliable answers to bad terrain. It has no near-miss score, random powerups,
+periodic shield, or secondary reward economy.
 
-- **Graze** falling blocks (near miss at lethal speed) to earn **Sparks**
-  (dash ammo) and **Heat**.
-- **Spark Dash** (Shift/X, or swipe sideways): 1 Spark. Phases through the
-  falling storm, bonks on the solid tower.
-- **Spike Drop** (down + dash in the air, or swipe down): 1 Spark. Meteor
-  straight down, shatter falling blocks and one exposed tower block.
-- **Storm Surf**: land on a fast-falling block and ride it. Jump the instant
-  it lands — the **Crest Jump** launches ~5 layers high.
-- **Heat** (the ember bar) is the flow meter: it multiplies your score up to
-  x4, buffs your movement, and *is* the music. Play scared and the world goes
-  quiet. Shield saves halve it.
-- **Gilded blocks** pay only via the risk verbs — and only until they oxidize.
+## Controls
 
-The climb passes through five zones (Meadow → Stormfront → Cloudtop → Aurora
-→ The Void), each adding one rule, while a pacing director breathes
-calm/build/surge/release and schedules telegraphed set pieces: Gold Rush,
-Wind Gust, Block Storm, Tetra Cluster, Whiteout, the Monolith, and the Meteor.
+| Action | Keyboard | Touch |
+| --- | --- | --- |
+| Move | `A` / `D` or Left / Right | Hold the lower-left or lower-right side |
+| Jump / auto-hop | `W`, Up, or `Space` | Tap or hold the upper area |
+| Fast fall | `S` or Down | - |
+| Focus Aim | Hold `Shift`, `X`, or `K` | Swipe and keep holding |
+| Commit Focus | Release the Focus key | Release the swipe |
+| Mute | `M` | - |
 
-Meta: ghost line at your best altitude, feat-gated player palettes, and a
-date-seeded **Daily Climb** (press D on the menu).
+Focus slows the whole simulation to 10% speed for at most 1.5 real seconds.
+The player continues moving and can adjust the eight-way aim direction. Release
+early, or let the timer expire, to commit the dash.
 
-## Dev
+## Core Mechanics
 
-```
+- The bounded 780 px arena uses 15 px horizontal block anchors. Partial
+  overlaps create ledges, overhangs, shoulders, and competing piles.
+- All materials share one fall profile, so later blocks cannot overtake slower
+  ones. Any positive horizontal contact is physical support; blocks never
+  phase through ledges or settle into occupied space.
+- **Wood** is the lethal baseline. Only a descending overhead impact kills.
+  Side contact pushes; incidental top contact with a moving block uses the same
+  collision rules but grants no special jump or reward.
+- **Gravel** is the nonlethal incoming material. It still pushes, traps,
+  and supports terrain, but a direct overhead impact does not kill. Its danger
+  difference is visible before contact.
+- **Beams** are 90 px wide blocks. Their broader roofs and support contacts
+  change terrain without adding special hidden rules.
+- **Focus** starts with two charges. Hitting a falling block shatters that one
+  hazard. Hitting settled terrain from any of the eight directions marks its
+  dependent branch for removal.
+- Cutting a fixed block previews its dependent branch during Aim, then keeps it
+  amber and solid for 12 world frames before it disappears
+  atomically. Debris is cosmetic and cannot collide, kill, or reseat.
+- Wall jumps recover from pockets and pile edges without requiring a random
+  double-jump pickup. Wall contact includes four-frame jump grace, and small
+  upward head-corner catches are corrected without cancelling the jump.
+- The HUD states how many new stable layers remain before the next dash. Focus
+  recharges on the landing frame after progress through each three-layer
+  threshold. At most one threshold is banked while charges are full, and
+  progress cannot advance during Aim.
+- The storm commits position, width, and material 18 frames before the drop.
+  A cheap local safety heuristic rejects only obvious synchronized crushes;
+  most terrain remains random and strategically imperfect.
+- Difficulty comes from rising density, camera pressure, and correlated storm
+  phases rather than unbounded gravity or unreadable physics.
+- Every 400 height arms an in-memory checkpoint. Continuing from the death
+  screen restores the exact simulation state and marks the run as assisted, so
+  it cannot replace the one-life best.
+
+See [`DESIGN.md`](./DESIGN.md) for the simulation contract and design rationale.
+
+## Development
+
+```sh
 npm install
-npm run dev           # ?seed=N for a fixed run, ?stress for spawn stress,
-                      # ?test to expose window.__sim/__ff/__events hooks
-node tests/determinism.mjs   # sim must be a pure function of (seed, inputs)
-node tests/verbs.mjs         # dash / graze / spike / surf / crest behavior
-node tests/zones.mjs         # zones, director phases, platforms, scoring
-node tests/events.mjs        # all seven set-piece events
+npm run dev
+npm test
+npm run build
 ```
 
-Architecture: `src/sim/` is the whole game simulation — plain JS, zero Phaser
-imports, one seeded mulberry32 rng, fixed 60Hz steps — so it runs headless in
-Node for the tests above. Rendering (`src/render/`), audio (`src/audio.js`,
-`src/music.js`) and scenes subscribe to sim events and never mutate sim state.
-Hitstop/slow-mo scale the accumulator, never the timestep.
+Use `?seed=N` for a repeatable run and `?test` to expose the browser test bridge.
+The authoritative simulation runs at fixed 60 Hz in `src/sim/`.

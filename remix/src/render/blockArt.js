@@ -8,13 +8,15 @@ import {
   COLOR_BLOCK_BORDER,
   COLOR_BLOCK_TOP,
   COLOR_BLOCK_SHADE,
+  COLOR_GRAVEL,
+  COLOR_BEAM,
   COLOR_WARNING,
   RES,
 } from '../constants.js';
 import { BLOCK_TYPES } from '../sim/blockTypes.js';
 
 // Art definition per block type id. `fills` length must be >= the sim spec's
-// `variants`. Types added later (gilded, ember, ...) get a row here.
+// `variants`. Any future material gets another row here.
 export const BLOCK_ART = {
   wood: {
     fills: COLOR_BLOCK_FILLS,
@@ -22,17 +24,19 @@ export const BLOCK_ART = {
     top: COLOR_BLOCK_TOP,
     shade: COLOR_BLOCK_SHADE,
   },
-  gilded: {
-    fills: [0xffd700],
-    border: 0xb8860b,
-    top: 0xfff3b0,
-    shade: 0xc79810,
+  gravel: {
+    fills: [COLOR_GRAVEL, 0x7c817c],
+    border: 0x515954,
+    top: 0xc9cfca,
+    shade: 0x5f6661,
+    cracks: true,
   },
-  monolith: {
-    fills: [0x2b2b36],
-    border: 0x0f0f16,
-    top: 0x4d4d5e,
-    shade: 0x08080d,
+  beam: {
+    fills: [COLOR_BEAM],
+    border: 0x25313c,
+    top: 0x8394a3,
+    shade: 0x26333f,
+    rivets: true,
   },
 };
 
@@ -55,6 +59,18 @@ function drawBlockArt(gfx, ox, oy, art, variant, k) {
   gfx.fillRoundedRect(ox + 3 * k, oy + h - 9 * k, w - 6 * k, 6 * k, {
     tl: 2 * k, tr: 2 * k, bl: 4 * k, br: 4 * k,
   });
+  if (art.cracks) {
+    gfx.lineStyle(1.6 * k, art.border, 0.75);
+    gfx.lineBetween(ox + 18 * k, oy + 4 * k, ox + 25 * k, oy + 16 * k);
+    gfx.lineBetween(ox + 25 * k, oy + 16 * k, ox + 20 * k, oy + 26 * k);
+    gfx.lineBetween(ox + 25 * k, oy + 16 * k, ox + 34 * k, oy + 21 * k);
+    gfx.lineBetween(ox + 42 * k, oy + 10 * k, ox + 37 * k, oy + 28 * k);
+  }
+  if (art.rivets) {
+    gfx.fillStyle(0xc3d0da, 0.9);
+    gfx.fillCircle(ox + 10 * k, oy + 20 * k, 2.4 * k);
+    gfx.fillCircle(ox + 50 * k, oy + 20 * k, 2.4 * k);
+  }
 }
 
 // Immediate-mode vector draw, used by the menu's decorative blocks
@@ -106,13 +122,29 @@ export function bakeBlockTextures(scene) {
   }
 }
 
-// Pulsing warning marker at the top of the screen for a falling block above
-// view. `pulse` is 0..1.
-export function drawWarningStrip(gfx, b, camY, pulse, color = COLOR_WARNING) {
+// Pulsing warning marker for a falling block above the readable playfield.
+// `y` is screen-space within the target graphics layer; `pulse` is 0..1.
+export function drawWarningStrip(gfx, b, y, pulse, color = COLOR_WARNING) {
   const x = Math.round(b.x);
   const cx = x + b.w / 2;
-  gfx.fillStyle(color, 0.35 + 0.45 * pulse);
-  gfx.fillRect(x, -camY, b.w, 5);
+  const h = 9;
+  const art = BLOCK_ART[b.type] ?? BLOCK_ART.wood;
+  gfx.fillStyle(art.fills[0], 0.78);
+  gfx.fillRect(x, y, b.w, h);
+  gfx.lineStyle(2, color, 0.55 + 0.35 * pulse);
+  gfx.strokeRect(x, y, b.w, h);
+  if (b.type === 'beam') {
+    gfx.fillStyle(0xd7e0e7, 0.9);
+    gfx.fillCircle(x + 11, y + h / 2, 1.5);
+    gfx.fillCircle(x + b.w - 11, y + h / 2, 1.5);
+  } else if (b.type === 'gravel') {
+    gfx.lineStyle(1.5, art.border, 0.9);
+    gfx.lineBetween(cx - 7, y + 1, cx - 2, y + 5);
+    gfx.lineBetween(cx - 2, y + 5, cx + 4, y + 2);
+  } else {
+    gfx.lineStyle(1.5, art.border, 0.72);
+    gfx.lineBetween(x + 9, y + h / 2, x + b.w - 9, y + h / 2);
+  }
   gfx.fillStyle(color, 0.25 + 0.65 * pulse);
-  gfx.fillTriangle(cx - 7, -camY + 5, cx + 7, -camY + 5, cx, -camY + 14);
+  gfx.fillTriangle(cx - 7, y + h, cx + 7, y + h, cx, y + h + 6);
 }

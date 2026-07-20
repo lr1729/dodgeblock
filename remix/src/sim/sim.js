@@ -1,129 +1,62 @@
-// The whole game simulation, extracted from the remake's GameScene.
-// Plain objects only — zero Phaser imports — so it runs headless in Node for
-// determinism tests, and everything the outside world needs to know arrives
-// via this.events (one-way: listeners must never mutate sim state).
-//
-// Step order faithfully mirrors classic/script.js:435-696; the collision
-// passes are order-dependent, don't reorder them.
-
 import {
-  GRAVITY,
-  DOWN_BOOST,
-  HMOV,
-  HMOV_BOOSTED,
-  HMOV_T1,
-  JUMP_VEL,
-  JUMP_VEL_T2,
+  BLOCK_H,
+  CAMERA_ANCHOR_Y,
+  CAMERA_RISE_BASE,
+  CAMERA_RATE_DIVISOR,
+  CORNER_CORRECTION_PX,
+  COYOTE_FRAMES,
+  FOCUS_AIM_WORLD_SCALE,
+  FOCUS_AIM_MAX_FRAMES,
+  FOCUS_CAP,
+  FOCUS_DASH_WORLD_SCALE,
+  FOCUS_EXIT_SPEED,
+  FOCUS_FRAMES,
+  FOCUS_RECHARGE_LAYERS,
+  FOCUS_SPEED,
+  GAME_H,
   GROUND,
-  PLAYER_MIN_X,
-  PLAYER_MAX_X,
-  BLOCK_COLLIDE_WINDOW,
-  SQUISH_VEL,
-  SPAWN_MIN_X,
-  SPAWN_MAX_X,
-  POWERUP_LIFETIME,
-  POWERUP_FLASH_AT,
-  POWERUP_TIMER_ADD,
-  VSPEED_TIMER_ADD,
-  POWERUP_TIMER_CAP,
-  POWERUP_CYCLE,
-  BLOCK_RATE_BASE,
-  RATE_GROWTH_REMIX,
-  COIN_VALUE,
-  CLOUD_PLAT_CRUMBLE,
-  GAME_W,
   JUMP_BUFFER_FRAMES,
-  DASH_BUFFER_FRAMES,
-  DASH_FRAMES,
-  DASH_SPEED,
-  DASH_EXIT_XVEL,
-  DASH_RECOVERY_IFRAMES,
-  DASH_COOLDOWN,
-  SPARK_CAP,
-  SPARK_CAP_T2,
-  GRAZE_LETHAL_VEL,
-  SPIKE_WINDUP,
-  SPIKE_VEL,
-  SPIKE_BOUNCE_VEL,
-  SURF_MIN_VEL,
-  SURF_HEAT_EVERY,
-  SURF_SPARK_EVERY,
-  CREST_MIN_RIDE,
-  CREST_WINDOW,
-  CREST_JUMP_VEL,
-  FRESH_FOOTING_FRAMES,
+  PLAYER_MAX_X,
+  PLAYER_MIN_X,
+  SQUISH_VEL,
 } from '../constants.js';
-import { rectrect, constrain } from './util.js';
-import { Rng } from './rng.js';
+import { BlockManager } from './blocks.js';
+import { Director } from './director.js';
 import { createEmitter } from './events.js';
 import { Player } from './player.js';
-import { BlockManager } from './blocks.js';
-import { Powerup } from './powerups.js';
-import {
-  heatTier,
-  heatMult,
-  gainHeat,
-  loseHeat,
-  updateHeatDecay,
-  gainSpark,
-  updateGraze,
-} from './combo.js';
-import { Director } from './director.js';
+import { Rng } from './rng.js';
+import { constrain, rectrect, rectrectStrict } from './util.js';
 
-// Neutral input snapshot, used by tests' fast-forward
 export const NEUTRAL_INPUT = Object.freeze({
   up: false,
   down: false,
   left: false,
   right: false,
   jumpPressed: false,
-  dashPressed: false,
-  spikePressed: false,
-  dashDir: 0,
+  focusPressed: false,
+  focusReleased: false,
+  focusHeld: false,
+  focusDirX: 0,
+  focusDirY: 0,
 });
 
 export class Sim {
-  constructor(seed, { stress = false } = {}) {
+  constructor(seed, { director = true } = {}) {
     this.seed = seed >>> 0;
     this.rng = new Rng(this.seed);
     this.events = createEmitter();
-    this.stress = stress;
-
     this.player = new Player();
     this.blocks = new BlockManager(this);
-    this.powerups = [];
+    this.director = new Director(this);
+    this.directorEnabled = director;
+
+    this.frame = 0;
     this.camY = 0;
-    this.frame = 0; // the original's frameCount - frameDiff
-    this.jKeyLetGo = 455;
-    this.jumpBuffer = 0; // frames a buffered jump press stays live
-    this.dashBuffer = 0;
-    this.pwrCounter = 0;
-    this.scoreCoins = 0;
-    this.score = 0;
-    this.blockRate = BLOCK_RATE_BASE; // blocks per second
-    this.spawnAcc = 0; // fractional blocks owed
+    this.height = 0;
+    this.blockRate = 0;
+    this.jumpBuffer = 0;
     this.dead = false;
     this.deathCause = null;
-
-    // --- remix state ---
-    this.scoreBonus = 0; // spike shatters, event payoffs, zone bonuses
-    this.scoreFloat = 0; // altitude income, accrued x heatMult
-    this.prevCamY = 0;
-    this.lastGrazeByCol = new Map(); // spawn column -> frame of last graze
-    this.landedOn = null; // block the player stood on this step
-    this.surfBlock = null; // falling block currently ridden
-    this.surfFrames = 0;
-    this.crestWindow = 0; // frames left to fire the crest jump
-    this.platforms = []; // crumble clouds (Cloudtop zone)
-    this.director = new Director(this);
-  }
-
-  get heatTier() {
-    return heatTier(this.player.heat);
-  }
-
-  get heatMult() {
-    return heatMult(this.player.heat);
   }
 
   kill(cause) {
@@ -132,538 +65,446 @@ export class Sim {
     this.deathCause = cause;
   }
 
-  // One frame of game logic. `inp` is a per-step input snapshot:
-  // { up, down, left, right, jumpPressed, dashPressed }
-  step(inp) {
+  snapshot() {
+    const { supportBlock, ...player } = this.player;
+    return {
+      seed: this.seed,
+      rngState: this.rng.s,
+      frame: this.frame,
+      camY: this.camY,
+      height: this.height,
+      blockRate: this.blockRate,
+      jumpBuffer: this.jumpBuffer,
+      player: {
+        ...player,
+        supportBlockId: supportBlock?.id ?? null,
+      },
+      blocks: this.blocks.snapshot(),
+      director: this.director.snapshot(),
+    };
+  }
+
+  restore(state) {
+    this.seed = state.seed >>> 0;
+    this.rng.s = state.rngState >>> 0;
+    this.frame = state.frame;
+    this.camY = state.camY;
+    this.height = state.height;
+    this.blockRate = state.blockRate;
+    this.jumpBuffer = state.jumpBuffer;
+    this.dead = false;
+    this.deathCause = null;
+    const byId = this.blocks.restore(state.blocks);
+    const { supportBlockId, ...player } = state.player;
+    Object.assign(this.player, player);
+    this.player.supportBlock = byId.get(supportBlockId) ?? null;
+    this.director.restore(state.director);
+    return this;
+  }
+
+  step(inp = NEUTRAL_INPUT) {
     if (this.dead) return;
     this.frame++;
     const p = this.player;
-    const wasAirborne = p.offGround; // for the landing-dust effect
+    const wasAirborne = p.offGround > COYOTE_FRAMES;
 
-    // director first: its rate/event multipliers apply this same frame
-    this.director.step();
-    this.blockRate =
-      (BLOCK_RATE_BASE + RATE_GROWTH_REMIX * this.frame) *
-      this.director.rateMul *
-      this.director.eventMul;
-    if (this.stress) this.blockRate = Math.max(this.blockRate, 30);
-    this.blockRate = Math.min(this.blockRate, 40); // storm-proof hard cap
-
-    // Heat-tier buffs, recomputed every step so decay downgrades apply
-    const tier = this.heatTier;
-    p.hMov = p.hTimer > 0 ? HMOV_BOOSTED : tier >= 1 ? HMOV_T1 : HMOV;
-    p.jumpVelBase = tier >= 2 ? JUMP_VEL_T2 : JUMP_VEL;
-    p.sparkCap = tier >= 2 ? SPARK_CAP_T2 : SPARK_CAP;
-
-    const busy = p.dashTimer > 0 || p.spiking;
-
-    // input. jKeyLetGo === 1 marks a fresh jump-key press (double jumps need
-    // one); a fresh press is also buffered for a few frames so a tap just
-    // before landing still fires — the crest jump depends on this.
-    this.jKeyLetGo++;
     if (inp.jumpPressed) this.jumpBuffer = JUMP_BUFFER_FRAMES;
-    if (inp.dashPressed) this.dashBuffer = DASH_BUFFER_FRAMES;
-    if (!busy) {
-      const freshJump = this.jumpBuffer > 0;
-      const preJumpTSJ = p.timeSinceJump;
-      if (inp.up || freshJump) {
-        p.jump(freshJump ? 1 : this.jKeyLetGo);
-        if (p.timeSinceJump === 0 && preJumpTSJ !== 0) {
-          this.jumpBuffer = 0;
-          // crest jump: the ridden block just landed and this jump is inside
-          // the window — launch at super height
-          if (this.crestWindow > 0) {
-            p.yVel = Math.max(p.yVel, CREST_JUMP_VEL);
-            this.crestWindow = 0;
-            gainHeat(this, 2, 'crest');
-            this.events.emit('crestJump', { x: p.x + p.w / 2, y: p.y });
-          }
-          this.events.emit('jump', { x: p.x, y: p.y });
-        }
-      }
-      if (inp.left) p.walk(-p.hMov);
-      if (inp.right) p.walk(p.hMov);
-      if (inp.down && p.vTimer > 0) p.yVel -= DOWN_BOOST;
-
-      // Spark verbs. Spike drop = dash button while airborne holding down
-      // (or a downward swipe); otherwise a horizontal dash.
-      const airborne = p.offGround >= 3;
-      const wantSpike =
-        airborne && (inp.spikePressed || (this.dashBuffer > 0 && inp.down));
-      if (wantSpike && p.sparks > 0) {
-        this.startSpike();
-      } else if (
-        this.dashBuffer > 0 &&
-        p.dashCooldown <= 0 &&
-        p.sparks > 0 &&
-        !inp.down
-      ) {
-        this.startDash(inp);
-      }
-    }
-    if (!inp.up) this.jKeyLetGo = 0;
-    if (this.jumpBuffer > 0) this.jumpBuffer--;
-    if (this.dashBuffer > 0) this.dashBuffer--;
-
-    // spawn blocks (and maybe powerups) by accumulating the smooth rate
-    this.spawnAcc += this.blockRate / 60;
-    while (this.spawnAcc >= 1) {
-      this.spawnAcc -= 1;
-      // cap concurrent fallers so a storm can't spiral the step budget
-      if (this.blocks.falling.length < 120) {
-        this.blocks.spawn(this.camY, this.blockRate);
-      }
-      const spawnY = -this.camY - 40;
-      const pwType = { 6: 'I', 13: 'H', 20: 'D', 27: 'V', 34: 'S' }[
-        this.pwrCounter % POWERUP_CYCLE
-      ];
-      if (pwType) {
-        this.powerups.push(
-          new Powerup(pwType, this.rng.int(SPAWN_MIN_X, SPAWN_MAX_X), spawnY),
-        );
-      }
-      this.pwrCounter++;
+    let startedFocusAim = false;
+    if (inp.focusPressed && p.focusTimer <= 0 && p.focusAimTimer <= 0 && p.focus > 0) {
+      this.startFocusAim(inp);
+      startedFocusAim = true;
     }
 
-    this.blocks.update();
-    this.updatePlatforms();
+    if (p.focusAimTimer > 0) {
+      this.updateFocusDirection(inp);
+      if (!startedFocusAim) p.focusAimTimer++;
+      p.focusAimRemaining = Math.max(0, p.focusAimRemaining - 1);
+      if (inp.focusReleased || !inp.focusHeld || p.focusAimRemaining <= 0) {
+        this.commitFocus();
+      }
+    }
 
-    this.landedOn = null;
-    if (p.dashTimer > 0) {
-      // dash replaces the movement/collision block entirely: horizontal
-      // only, phases falling blocks, bonks on the solid tower
-      p.shieldTimer--;
-      p.hTimer--;
-      p.vTimer--;
-      p.dTimer--;
-      this.updateDash();
-    } else if (p.spiking) {
-      p.shieldTimer--;
-      p.hTimer--;
-      p.vTimer--;
-      p.dTimer--;
-      this.updateSpike();
+    const worldScale = p.focusAimTimer > 0
+      ? FOCUS_AIM_WORLD_SCALE
+      : p.focusTimer > 0
+        ? FOCUS_DASH_WORLD_SCALE
+        : 1;
+    if (this.directorEnabled) this.director.step(worldScale);
+    this.blockRate = this.director.blockRate ?? 0;
+    p.offGround += worldScale;
+    p.timeSinceJump += worldScale;
+
+    if (p.focusTimer <= 0) {
+      const axis = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
+      p.move(axis, worldScale);
+
+      // Held jump repeats as soon as valid footing returns. The explicit
+      // buffer still preserves short taps made just before landing.
+      if ((this.jumpBuffer > 0 || inp.up) && p.jump()) {
+        this.jumpBuffer = 0;
+        this.events.emit('jump', { x: p.x + p.w / 2, y: p.y });
+      }
+    }
+
+    if (this.jumpBuffer > 0) this.jumpBuffer = Math.max(0, this.jumpBuffer - worldScale);
+    this.blocks.update(worldScale);
+    if (p.focusTimer > 0) {
+      this.updateFocus();
     } else {
-      // three player-vs-block passes, faithfully order-dependent:
-      // pass A resolves blocks that moved into the player (also resets jumps)
-      this.landSquishPass(0);
-      p.shieldTimer--;
-      p.hTimer--;
-      p.vTimer--;
-      p.dTimer--;
-      if (this.director.wind) p.xVel += this.director.wind;
-      p.updateX();
+      p.wallSide = 0;
+      this.landOrSquishPass(0);
+      p.updateX(worldScale);
       this.wallPass();
-      p.updateY(inp.up);
-      if (rectrect(p, GROUND)) {
-        p.y = GROUND.y - p.h;
-        p.yVel = 0;
-        p.offGround = 0;
-      }
-      // pass C: same as A but lands with an extra -0.1 offset (the original's
-      // second landing snap at classic/script.js:579)
-      this.landSquishPass(-0.1);
-      this.platformLandPass();
+      p.updateWallCoyote(worldScale);
+      p.updateY(inp.up, inp.down, worldScale);
+      if (rectrect(p, GROUND)) this.landOnGround();
+      this.landOrSquishPass(-0.1);
+      p.clampX();
     }
 
-    // landing feedback
     if (p.landSquash > 0) p.landSquash--;
-    if (p.offGround === 0 && wasAirborne > 4) {
-      p.landSquash = 8;
+    if (p.offGround === 0 && wasAirborne) {
+      p.landSquash = 7;
       this.events.emit('land', { x: p.x + p.w / 2, y: p.y + p.h });
     }
 
-    this.updateSurf();
-    updateGraze(this);
-    updateHeatDecay(this);
-    if (p.dashCooldown > 0) p.dashCooldown--;
-    if (p.dashRecovery > 0 && p.dashTimer <= 0 && !p.spiking) p.dashRecovery--;
-    if (this.crestWindow > 0) this.crestWindow--;
+    this.updateFocusRecharge(worldScale);
+    this.updateCameraAndHeight(worldScale);
 
-    this.updatePowerups();
-
-    p.offGround++;
-    p.timeSinceJump++;
-
-    // camera: slow constant rise, plus snapping up when the player is high
-    // (the original's 2/fpb per frame == blockRate/30)
-    this.camY += this.blockRate / 30;
-    if (p.y + this.camY < 150 && -p.y + 150 > this.camY) {
-      this.camY = -p.y + 150;
-    }
-
-    // altitude income accrues at the Heat multiplier — the greed economy
-    this.scoreFloat += (this.camY - this.prevCamY) * this.heatMult;
-    this.prevCamY = this.camY;
-
-    this.updateScore();
-    if (p.y > -this.camY + 500) this.kill('fell');
+    if (p.y > -this.camY + GAME_H) this.kill('fell');
     if (this.dead) this.events.emit('death', { cause: this.deathCause });
   }
 
-  updateScore() {
-    // altitude x mult + coins x mult + bonuses (blocks.length is a stat now,
-    // not score — it double-counted time)
-    this.score = Math.round(this.scoreFloat) + this.scoreCoins + this.scoreBonus;
-  }
-
-  // crumble clouds: drift in from the sides, crumble shortly after first
-  // being stood on. Semisolid — no block/powerup interaction, no squish.
-  updatePlatforms() {
-    for (let i = 0; i < this.platforms.length; i++) {
-      const pl = this.platforms[i];
-      pl.x += pl.vx;
-      const gone =
-        (pl.crumbleAt > 0 && this.frame >= pl.crumbleAt) ||
-        pl.x > GAME_W + 140 ||
-        pl.x < -240 ||
-        pl.y > -this.camY + 600;
-      if (gone) {
-        if (pl.crumbleAt > 0) {
-          this.events.emit('cloudGone', { x: pl.x + pl.w / 2, y: pl.y });
-        }
-        this.platforms.splice(i, 1);
-        i--;
-      }
-    }
-  }
-
-  platformLandPass() {
+  directionFromInput(inp) {
     const p = this.player;
-    for (const pl of this.platforms) {
-      // only catch a falling player from above — jump up through freely
-      if (p.yVel <= 0 && p.y < pl.y && rectrect(p, pl)) {
-        p.y = pl.y - p.h;
-        p.yVel = 0;
-        p.offGround = 0;
-        p.jumps = 0;
-        if (pl.crumbleAt < 0) {
-          pl.crumbleAt = this.frame + CLOUD_PLAT_CRUMBLE;
-          this.events.emit('cloudLand', { x: pl.x + pl.w / 2, y: pl.y });
-        }
-      }
+    const hasGestureDirection = inp.focusDirX !== 0 || inp.focusDirY !== 0;
+    let dx = hasGestureDirection
+      ? inp.focusDirX
+      : inp.right
+        ? 1
+        : inp.left
+          ? -1
+          : 0;
+    let dy = hasGestureDirection
+      ? inp.focusDirY
+      : inp.down
+        ? 1
+        : inp.up
+          ? -1
+          : 0;
+    if (dx === 0 && dy === 0) dx = p.focusDX || p.facing;
+    if (dx !== 0 && dy !== 0) {
+      dx *= Math.SQRT1_2;
+      dy *= Math.SQRT1_2;
     }
+    return { dx, dy };
   }
 
-  // ---------------------------------------------------------------- verbs
-
-  startDash(inp) {
+  startFocusAim(inp) {
     const p = this.player;
-    p.sparks--;
-    this.dashBuffer = 0;
-    p.dashTimer = DASH_FRAMES;
-    p.dashDir = inp.dashDir || (inp.left ? -1 : inp.right ? 1 : p.facing);
-    p.facing = p.dashDir;
-    p.dashPhaseCount = 0;
-    this.events.emit('dash', { dir: p.dashDir, x: p.x, y: p.y, sparks: p.sparks });
+    const { dx, dy } = this.directionFromInput(inp);
+    p.focus--;
+    p.focusAimTimer = 1;
+    p.focusAimRemaining = FOCUS_AIM_MAX_FRAMES;
+    p.focusDX = dx;
+    p.focusDY = dy;
+    this.events.emit('focusAimStart', { x: p.x, y: p.y, focus: p.focus });
   }
 
-  updateDash() {
-    const p = this.player;
-    p.x = constrain(p.x + DASH_SPEED * p.dashDir, PLAYER_MIN_X, PLAYER_MAX_X - p.w);
-    p.yVel = 0;
-    let bonked = false;
-    const blocks = this.blocks.blocks;
-    for (
-      let i = Math.max(0, blocks.length - BLOCK_COLLIDE_WINDOW);
-      i < blocks.length;
-      i++
-    ) {
-      const b = blocks[i];
-      if (!rectrect(p, b)) continue;
-      if (b.fixed) {
-        // the tower is always solid: bonk, stop, small pushback
-        p.x = p.dashDir > 0 ? b.x - p.w - 3 : b.x + b.w + 3;
-        bonked = true;
-        break;
-      }
-      if (!b.dashPhased && b.yVel > GRAZE_LETHAL_VEL) {
-        b.dashPhased = true;
-        if (p.dashPhaseCount < 2) {
-          p.dashPhaseCount++;
-          gainHeat(this, 1, 'phase');
-          if (b.type === 'gilded') {
-            this.scoreBonus += 100;
-            gainSpark(this, 1, 'gilded-phase');
-          }
-        }
-        this.events.emit('dashPhase', {
-          x: b.x + b.w / 2,
-          y: b.y + b.h / 2,
-          block: b,
-        });
-      }
-    }
-    // dashing along the ground keeps you grounded
-    if (rectrect(p, GROUND)) {
-      p.y = GROUND.y - p.h;
-      p.offGround = 0;
-    }
-    p.dashTimer--;
-    if (bonked) p.dashTimer = 0;
-    if (p.dashTimer <= 0) {
-      p.dashRecovery = DASH_RECOVERY_IFRAMES;
-      p.dashCooldown = DASH_COOLDOWN;
-      p.xVel = bonked ? -p.dashDir * 2 : DASH_EXIT_XVEL * p.dashDir;
-      this.events.emit(bonked ? 'dashBonk' : 'dashEnd', { x: p.x, y: p.y });
-    }
+  updateFocusDirection(inp) {
+    const { dx, dy } = this.directionFromInput(inp);
+    this.player.focusDX = dx;
+    this.player.focusDY = dy;
   }
 
-  startSpike() {
+  commitFocus() {
     const p = this.player;
-    p.sparks--;
-    this.dashBuffer = 0;
-    p.spiking = true;
-    p.spikeWindup = SPIKE_WINDUP;
-    p.spikeShattered = false;
+    if (p.focusAimTimer <= 0) return;
+    const heldFrames = p.focusAimTimer;
+    p.focusAimTimer = 0;
+    p.focusAimRemaining = 0;
+    p.focusTimer = FOCUS_FRAMES;
     p.xVel = 0;
-    this.events.emit('spikeStart', { x: p.x, y: p.y, sparks: p.sparks });
+    p.yVel = 0;
+    this.events.emit('focusAimEnd', { heldFrames });
+    this.events.emit('focusStart', {
+      x: p.x,
+      y: p.y,
+      dx: p.focusDX,
+      dy: p.focusDY,
+      focus: p.focus,
+    });
   }
 
-  updateSpike() {
+  updateFocus() {
     const p = this.player;
-    if (p.spikeWindup > 0) {
-      p.spikeWindup--;
-      p.yVel = 0;
-      if (p.spikeWindup === 0) this.events.emit('spikeDrop', { x: p.x, y: p.y });
+    const oldX = p.x;
+    const oldY = p.y;
+    const wantedX = p.x + p.focusDX * FOCUS_SPEED;
+    p.x = constrain(
+      wantedX,
+      PLAYER_MIN_X,
+      PLAYER_MAX_X - p.w,
+    );
+    p.y += p.focusDY * FOCUS_SPEED;
+
+    if (p.x !== wantedX) {
+      this.events.emit('focusBonk', { x: p.x + p.w / 2, y: p.y + p.h / 2 });
+      this.endFocus('bonk');
       return;
     }
-    p.y += SPIKE_VEL;
-    p.yVel = -SPIKE_VEL; // render pose reads this (positive = up)
+
     const blocks = this.blocks.blocks;
-    for (
-      let i = Math.max(0, blocks.length - BLOCK_COLLIDE_WINDOW);
-      i < blocks.length;
-      i++
-    ) {
+    for (let i = 0; i < blocks.length; i++) {
       const b = blocks[i];
-      if (!rectrect(p, b)) continue;
-      if (!b.fixed && !b.spec.unbreakable) {
-        // falling blocks shatter on the way down — you are the meteor
-        gainHeat(this, 1, 'spike-air');
-        if (b.type === 'gilded') this.scoreBonus += 150;
-        this.events.emit('blockBreak', {
+      if (!rectrectStrict(p, b)) continue;
+
+      if (!b.fixed) {
+        this.blocks.remove(b);
+        p.x = oldX;
+        p.y = oldY;
+        this.events.emit('focusKick', {
           x: b.x + b.w / 2,
           y: b.y + b.h / 2,
           block: b,
-          cause: 'spike-air',
+          shattered: true,
         });
-        this.blocks.remove(b);
-        i--;
+        this.endFocus('kick');
+        return;
+      }
+
+      p.x = oldX;
+      p.y = oldY;
+      const affected = this.blocks.removeFixedAndCollapse(b);
+      this.events.emit('focusBreak', {
+        x: b.x + b.w / 2,
+        y: b.y + b.h / 2,
+        block: b,
+        fixed: true,
+        affected,
+        detached: affected,
+      });
+      this.endFocus('break');
+      return;
+    }
+
+    if (rectrectStrict(p, GROUND)) {
+      p.x = oldX;
+      p.y = Math.min(oldY, GROUND.y - p.h);
+      this.events.emit('focusBonk', { x: p.x + p.w / 2, y: GROUND.y });
+      this.endFocus('bonk');
+      return;
+    }
+
+    p.focusTimer--;
+    if (p.focusTimer <= 0) this.endFocus('end');
+  }
+
+  focusPathCollision() {
+    const p = this.player;
+    const probe = { x: p.x, y: p.y, w: p.w, h: p.h };
+
+    for (let step = 0; step < FOCUS_FRAMES; step++) {
+      const wantedX = probe.x + p.focusDX * FOCUS_SPEED;
+      probe.x = constrain(wantedX, PLAYER_MIN_X, PLAYER_MAX_X - probe.w);
+      probe.y += p.focusDY * FOCUS_SPEED;
+      const distance = (step + 1) * FOCUS_SPEED;
+      if (probe.x !== wantedX) return { kind: 'bonk', reason: 'rail', distance };
+
+      for (const block of this.blocks.blocks) {
+        if (!rectrectStrict(probe, block)) continue;
+        return { kind: block.fixed ? 'fixed' : 'falling', block, distance };
+      }
+      if (rectrectStrict(probe, GROUND)) {
+        return { kind: 'bonk', reason: 'ground', distance };
+      }
+    }
+
+    return { kind: 'clear' };
+  }
+
+  endFocus(reason) {
+    const p = this.player;
+    p.focusTimer = 0;
+    p.xVel = p.focusDX * FOCUS_EXIT_SPEED;
+    p.yVel = -p.focusDY * FOCUS_EXIT_SPEED;
+    p.offGround = COYOTE_FRAMES + 1;
+    this.events.emit('focusEnd', { reason, x: p.x, y: p.y });
+  }
+
+  landOnGround() {
+    const p = this.player;
+    p.y = GROUND.y - p.h;
+    p.yVel = 0;
+    p.offGround = 0;
+    p.supportBlock = null;
+    p.clearWallCoyote();
+    p.lastWallJumpSide = 0;
+  }
+
+  landOrSquishPass(offset) {
+    const p = this.player;
+    const blocks = this.blocks.blocks;
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i];
+      if (!rectrect(p, b)) continue;
+
+      const contact = this.contactDirection(b);
+      if (contact === 'up') {
+        p.y = b.y - p.h + (b.fixed ? offset : 0);
+        p.yVel = b.fixed ? 0 : -b.yVel;
+        p.offGround = 0;
+        p.supportBlock = b;
+        p.lastWallJumpSide = 0;
+        p.clearWallCoyote();
         continue;
       }
-      // fixed: shatter one exposed top ("exposed only" means nothing is ever
-      // left floating), else a dull thud; bounce off either way
-      if (!p.spikeShattered && b.fixed && !b.spec.unbreakable && this.blocks.isExposedTop(b)) {
-        p.spikeShattered = true;
-        this.scoreBonus += 15;
-        gainHeat(this, 1, 'spike');
-        if (b.type === 'gilded') this.scoreBonus += 150;
-        this.events.emit('spikeShatter', {
-          x: b.x + b.w / 2,
-          y: b.y + b.h / 2,
-          block: b,
-        });
-        this.blocks.removeFixed(b);
-      } else {
-        this.events.emit('spikeThud', { x: p.x + p.w / 2, y: b.y });
+
+      if (
+        contact === 'down' &&
+        b.fixed &&
+        p.yVel > 0 &&
+        this.tryUpwardCornerCorrection(b)
+      ) {
+        continue;
       }
-      p.y = b.y - p.h;
-      this.endSpike();
-      return;
-    }
-    if (rectrect(p, GROUND)) {
-      p.y = GROUND.y - p.h;
-      this.events.emit('spikeThud', { x: p.x + p.w / 2, y: GROUND.y, ground: true });
-      this.endSpike();
+
+      if (
+        contact === 'down' &&
+        (!b.fixed || b.fixedAtFrame === this.frame) &&
+        b.spec.lethal &&
+        (b.fixed ? b.impactVel : b.yVel) > SQUISH_VEL
+      ) {
+        this.kill('squished');
+        return;
+      }
+
+      this.resolveSoftOverlap(b, contact);
     }
   }
 
-  endSpike() {
+  contactDirection(b) {
     const p = this.player;
-    p.spiking = false;
-    p.yVel = SPIKE_BOUNCE_VEL;
-    p.dashRecovery = DASH_RECOVERY_IFRAMES;
-    p.dashCooldown = DASH_COOLDOWN;
-    p.jumps = 0;
+    const left = p.x + p.w - b.x;
+    const right = b.x + b.w - p.x;
+    const up = p.y + p.h - b.y;
+    const down = b.y + b.h - p.y;
+    const horizontal = Math.min(left, right);
+    const vertical = Math.min(up, down);
+    // Horizontal wins corner ties, making a glancing shoulder contact a push
+    // rather than an arbitrary crush.
+    if (horizontal <= vertical) return left <= right ? 'left' : 'right';
+    return up <= down ? 'up' : 'down';
   }
 
-  // Storm surfing: standing on a fast-falling block pays Heat/Sparks over
-  // time; when a block you rode >= CREST_MIN_RIDE frames fixes under you, a
-  // short crest window opens for the super jump. Fresh footing (standing on
-  // any block soon after it landed) pays a little Heat once per block.
-  updateSurf() {
+  resolveSoftOverlap(b, contact = this.contactDirection(b)) {
     const p = this.player;
-    const b = this.landedOn;
-    if (b && !b.fixed && b.yVel > SURF_MIN_VEL) {
-      if (this.surfBlock === b) {
-        this.surfFrames++;
-      } else {
-        this.surfBlock = b;
-        this.surfFrames = 1;
-        this.events.emit('surfStart', { block: b });
-      }
-      b.ridden = this.surfFrames;
-      if (this.surfFrames % SURF_HEAT_EVERY === 0) gainHeat(this, 1, 'surf');
-      if (this.surfFrames % SURF_SPARK_EVERY === 0) gainSpark(this, 1, 'surf');
-    } else if (this.surfBlock) {
-      // the block snaps to its layer on the fix frame, briefly breaking
-      // contact — the crest window opens on the fix, not on exact contact
-      if (this.surfBlock.fixed && this.surfFrames >= CREST_MIN_RIDE) {
-        this.crestWindow = CREST_WINDOW;
-        this.events.emit('crestOpen', {
-          x: this.surfBlock.x + this.surfBlock.w / 2,
-          y: this.surfBlock.y,
-          block: this.surfBlock,
-        });
-      }
-      this.surfBlock = null;
-      this.surfFrames = 0;
-    }
-    if (b && b.fixed && !b.freshPaid && this.frame - b.fixedAtFrame <= FRESH_FOOTING_FRAMES) {
-      b.freshPaid = true;
-      gainHeat(this, 1, 'fresh');
+    if (contact === 'left') {
+      p.x = b.x - p.w - 0.1;
+      p.xVel = 0;
+    } else if (contact === 'right') {
+      p.x = b.x + b.w + 0.1;
+      p.xVel = 0;
+    } else if (contact === 'up') {
+      p.y = b.y - p.h - 0.1;
+      if (p.yVel < 0) p.yVel = 0;
+    } else {
+      p.y = b.y + b.h + 0.1;
+      if (p.yVel > 0) p.yVel = 0;
     }
   }
 
-  // land on top / get squished / pushed out from under a ceiling
-  landSquishPass(landOffset) {
-    const p = this.player;
-    const blocks = this.blocks.blocks;
-    for (
-      let i = Math.max(0, blocks.length - BLOCK_COLLIDE_WINDOW);
-      i < blocks.length;
-      i++
-    ) {
-      const b = blocks[i];
-      if (rectrect(p, b)) {
-        if (b.spec.onPlayerContact) {
-          const kind = p.y < b.y ? 'land' : b.yVel > SQUISH_VEL ? 'squish' : 'push';
-          if (b.spec.onPlayerContact(b, p, this, kind)) continue;
-        }
-        if (p.y < b.y) {
-          // riding: falling blocks snap flush (the -0.1 offset would leave a
-          // permanent hairline gap once velocities match) and the player
-          // inherits the block's velocity instead of resetting — gravity
-          // applies equally to both afterwards, so the player stays glued all
-          // the way down. This is what makes storm surfing possible (the
-          // original's yVel=0 skids you off anything falling faster than
-          // your own re-acceleration).
-          p.y = b.y - p.h + (b.fixed ? landOffset : 0);
-          p.yVel = b.fixed ? 0 : -b.yVel;
-          p.offGround = 0;
-          p.jumps = 0;
-          this.landedOn = b;
-        } else if (b.yVel > SQUISH_VEL && b.spec.lethal) {
-          if (p.dashRecovery > 0) continue; // post-dash/spike i-frames
-          if (p.shieldTimer > 0) {
-            this.events.emit('shieldPop', {
-              x: b.x + b.w / 2,
-              y: b.y + b.h / 2,
-            });
-            // the shield saves your life but taxes your greed
-            loseHeat(this, Math.ceil(p.heat / 2), 'shield');
-            this.blocks.remove(b);
-            i--;
-            continue;
-          }
-          this.kill('squished');
-        } else {
-          p.yVel = 0;
-          while (rectrect(p, b)) p.y += 0.2;
-        }
-      }
-    }
-  }
-
-  // undo horizontal movement into a block
   wallPass() {
     const p = this.player;
     const blocks = this.blocks.blocks;
-    for (
-      let i = Math.max(0, blocks.length - BLOCK_COLLIDE_WINDOW);
-      i < blocks.length;
-      i++
-    ) {
-      if (rectrect(p, blocks[i])) {
-        p.xVel = 0;
-        p.x = p.originalPos;
-      }
+    for (let i = 0; i < blocks.length; i++) {
+      const b = blocks[i];
+      if (!b.fixed || !rectrect(p, b)) continue;
+      const side = p.x + p.w / 2 <= b.x + b.w / 2 ? 1 : -1;
+      p.x = p.originalPos;
+      p.xVel = 0;
+      p.rememberWall(side);
+      return;
     }
   }
 
-  updatePowerups() {
+  tryUpwardCornerCorrection(block) {
     const p = this.player;
-    const blocks = this.blocks.blocks;
-    for (let i = 0; i < this.powerups.length; i++) {
-      const pw = this.powerups[i];
-      pw.yVel += GRAVITY;
-      pw.y += pw.yVel;
-      if (rectrect(pw, GROUND)) {
-        pw.yVel = 0;
-        pw.y = GROUND.y - pw.h;
-      }
-      // the remake faithfully scanned EVERY block here; at remix spawn rates
-      // that's O(total x powerups) and melts the step budget late-game —
-      // powerups only ever rest on recent (top-of-stack) blocks anyway
-      for (
-        let j = Math.max(0, blocks.length - BLOCK_COLLIDE_WINDOW);
-        j < blocks.length;
-        j++
-      ) {
-        if (rectrect(pw, blocks[j])) {
-          pw.yVel = 0;
-          pw.y = blocks[j].y - pw.h;
-        }
-      }
-      // flash when about to despawn
-      pw.visible = pw.timer < POWERUP_FLASH_AT || this.frame % 16 < 8;
-      if (rectrect(pw, p)) {
-        switch (pw.type) {
-          case 'I':
-            p.shieldTimer =
-              constrain(p.shieldTimer, 0, POWERUP_TIMER_CAP) + POWERUP_TIMER_ADD;
-            break;
-          case 'H':
-            p.hTimer =
-              constrain(p.hTimer, 0, POWERUP_TIMER_CAP) + POWERUP_TIMER_ADD;
-            break;
-          case 'D':
-            p.dTimer =
-              constrain(p.dTimer, 0, POWERUP_TIMER_CAP) + POWERUP_TIMER_ADD;
-            break;
-          case 'V':
-            p.vTimer =
-              constrain(p.vTimer, 0, POWERUP_TIMER_CAP) + VSPEED_TIMER_ADD;
-            break;
-          case 'S':
-            this.scoreCoins += COIN_VALUE * this.heatMult;
-            if (this.director.activeEvent?.spec.id === 'goldrush') {
-              this.director.eventData.collected++;
-            }
-            break;
-        }
-        this.events.emit('pickup', {
-          type: pw.type,
-          x: pw.x + pw.w / 2,
-          y: pw.y + pw.h / 2,
-          px: p.x + p.w / 2,
-          py: p.y,
-          amount: pw.type === 'S' ? COIN_VALUE * this.heatMult : 0,
-        });
-        this.powerups.splice(i, 1);
-        i--;
-        continue;
-      }
-      pw.timer++;
-      if (pw.timer > POWERUP_LIFETIME) {
-        this.powerups.splice(i, 1);
-        i--;
-      }
+    const candidates = [
+      { x: block.x - p.w - 0.1, direction: -1 },
+      { x: block.x + block.w + 0.1, direction: 1 },
+    ]
+      .map((candidate) => ({
+        ...candidate,
+        distance: Math.abs(candidate.x - p.x),
+        preference: candidate.direction === Math.sign(p.xVel) ? 0 : 1,
+      }))
+      .filter((candidate) => candidate.distance <= CORNER_CORRECTION_PX + 0.1)
+      .sort((a, b) => a.distance - b.distance || a.preference - b.preference);
+
+    for (const candidate of candidates) {
+      if (candidate.x < PLAYER_MIN_X || candidate.x > PLAYER_MAX_X - p.w) continue;
+      const probe = { x: candidate.x, y: p.y, w: p.w, h: p.h };
+      const obstructed = this.blocks.blocks.some(
+        (other) => other.fixed && other !== block && rectrectStrict(probe, other),
+      );
+      if (obstructed) continue;
+      p.x = candidate.x;
+      return true;
+    }
+    return false;
+  }
+
+  updateFocusRecharge(timeScale = 1) {
+    const p = this.player;
+    if (p.focusAimTimer > 0) return;
+    const stable =
+      p.offGround === 0 &&
+      (!p.supportBlock || (p.supportBlock.fixed && p.supportBlock.faultTimer <= 0));
+    if (!stable) {
+      p.stableFrames = 0;
+      return;
+    }
+    p.stableFrames += timeScale;
+
+    const layer = Math.max(0, Math.floor((GROUND.y - (p.y + p.h) + 1) / BLOCK_H));
+    if (layer > p.highestStableLayer) {
+      const gained = layer - p.highestStableLayer;
+      p.focusProgress += gained;
+      p.highestStableLayer = layer;
+      this.events.emit('focusLayer', { gained, layer });
+    }
+    while (p.focus < FOCUS_CAP && p.focusProgress >= FOCUS_RECHARGE_LAYERS) {
+      p.focus++;
+      p.focusProgress -= FOCUS_RECHARGE_LAYERS;
+      this.events.emit('focusRecharge', { focus: p.focus, layer });
+    }
+    if (p.focus >= FOCUS_CAP) {
+      p.focusProgress = Math.min(p.focusProgress, FOCUS_RECHARGE_LAYERS);
+    }
+    p.nextFocusLayer = p.highestStableLayer +
+      Math.max(0, FOCUS_RECHARGE_LAYERS - p.focusProgress);
+  }
+
+  updateCameraAndHeight(worldScale = 1) {
+    const p = this.player;
+    const rise = Math.max(
+      CAMERA_RISE_BASE,
+      (this.blockRate ?? 0) / CAMERA_RATE_DIVISOR,
+    );
+    this.camY += rise * worldScale;
+    if (p.y + this.camY < CAMERA_ANCHOR_Y) {
+      this.camY = Math.max(this.camY, -p.y + CAMERA_ANCHOR_Y);
+    }
+    const stableFooting =
+      p.offGround === 0 &&
+      (!p.supportBlock || (p.supportBlock.fixed && p.supportBlock.faultTimer <= 0));
+    if (stableFooting) {
+      const stableHeight = Math.max(0, Math.round(GROUND.y - (p.y + p.h)));
+      this.height = Math.max(this.height, stableHeight);
     }
   }
 
-  // compact state fingerprint for determinism tests
   hash() {
     const p = this.player;
     return [
@@ -673,12 +514,15 @@ export class Sim {
       p.xVel.toFixed(4),
       p.yVel.toFixed(4),
       this.camY.toFixed(4),
+      this.height,
       this.blocks.length,
       this.blocks.falling.length,
-      this.powerups.length,
-      this.score,
-      p.sparks,
-      p.heat,
+      p.focus,
+      p.focusAimTimer,
+      p.focusAimRemaining,
+      p.focusProgress,
+      p.nextFocusLayer,
+      this.director.phase,
       this.rng.s,
     ].join('|');
   }

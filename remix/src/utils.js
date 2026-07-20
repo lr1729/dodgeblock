@@ -28,7 +28,7 @@ export function textStyle(size, extra = {}) {
 // stroke) at RES density. HUD numbers render as BitmapText — batched quads,
 // zero rasterization when the value changes, and texel-perfect under the
 // camera zoom. (A changing Phaser.Text re-rasterizes and re-uploads its
-// texture on every setText, which the score does every few frames late-game
+// texture on every setText, which the height display updates frequently
 // and the FPS readout does every frame precisely when FPS is unstable.)
 export const DIGIT_FONT = 'hud-digits';
 const HUD_FONT_SIZE = 25;

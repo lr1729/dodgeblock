@@ -15,11 +15,17 @@ export function isMobile(scene) {
 // consumed exactly once per step via consumePressed() — a tap that lands
 // between two steps is never lost, even under hitstop.
 //
-// Dash: Shift / X / K, or a quick horizontal swipe on touch.
-// Spike (dash while airborne holding down): quick downward swipe on touch.
+// Focus Aim: hold Shift / X / K plus a direction, then release to commit.
 export function createInput(scene) {
-  const k = scene.input.keyboard.addKeys('UP,DOWN,LEFT,RIGHT,W,A,S,D');
-  const pressed = { jump: false, dash: false, spike: false, dashDir: 0 };
+  const k = scene.input.keyboard.addKeys('UP,DOWN,LEFT,RIGHT,W,A,S,D,SPACE');
+  const pressed = {
+    jump: false,
+    focus: false,
+    focusReleased: false,
+    focusDirX: 0,
+    focusDirY: 0,
+  };
+  const focusKeys = new Set();
 
   scene.input.keyboard.on('keydown', (e) => {
     if (e.repeat) return;
@@ -33,9 +39,14 @@ export function createInput(scene) {
       case 'ShiftRight':
       case 'KeyX':
       case 'KeyK':
-        pressed.dash = true;
+        if (!focusKeys.size) pressed.focus = true;
+        focusKeys.add(e.code);
         break;
     }
+  });
+  scene.input.keyboard.on('keyup', (e) => {
+    if (!focusKeys.delete(e.code)) return;
+    if (!focusKeys.size) pressed.focusReleased = true;
   });
   scene.input.keyboard.addCapture('SPACE,SHIFT,X,K,UP,DOWN,LEFT,RIGHT,W,A,S,D');
 
@@ -46,7 +57,7 @@ export function createInput(scene) {
   return {
     touch, // null on non-touch devices; used by TouchHints
     get up() {
-      return k.UP.isDown || k.W.isDown || !!(touch && touch.jump);
+      return k.UP.isDown || k.W.isDown || k.SPACE.isDown || !!(touch && touch.jump);
     },
     get down() {
       return k.DOWN.isDown || k.S.isDown;
@@ -57,16 +68,20 @@ export function createInput(scene) {
     get right() {
       return k.RIGHT.isDown || k.D.isDown || !!(touch && touch.dir(1));
     },
+    get focusHeld() {
+      return focusKeys.size > 0 || !!(touch && touch.focusHeld);
+    },
     // fresh presses since the last call; cleared on read
     consumePressed() {
       const out = {
         jumpPressed: pressed.jump,
-        dashPressed: pressed.dash,
-        spikePressed: pressed.spike,
-        dashDir: pressed.dashDir,
+        focusPressed: pressed.focus,
+        focusReleased: pressed.focusReleased,
+        focusDirX: pressed.focusDirX || touch?.focusDirX || 0,
+        focusDirY: pressed.focusDirY || touch?.focusDirY || 0,
       };
-      pressed.jump = pressed.dash = pressed.spike = false;
-      pressed.dashDir = 0;
+      pressed.jump = pressed.focus = pressed.focusReleased = false;
+      pressed.focusDirX = pressed.focusDirY = 0;
       return out;
     },
   };
@@ -80,9 +95,11 @@ export function createInput(scene) {
 // so sliding a held thumb across the middle switches direction.
 export const JUMP_ZONE_FRAC = 0.4;
 
-// Swipe gesture: pointer travels SWIPE_FRAC of the canvas width within
-// SWIPE_MS of touching down. Horizontal = dash, downward = spike.
-const SWIPE_MS = 130;
+// Focus is a deliberate hold-then-swipe. The lower bound prevents a quick
+// movement-thumb reversal from spending a charge; the upper bound keeps an
+// old movement touch from unexpectedly becoming Focus much later.
+const SWIPE_MIN_MS = 120;
+const SWIPE_MAX_MS = 700;
 const SWIPE_FRAC = 0.05;
 
 function createTouch(scene, pressed) {
@@ -91,11 +108,20 @@ function createTouch(scene, pressed) {
 
   const touch = {
     onZonePress: null, // TouchHints hook: (zone: 'jump'|'left'|'right') => void
+    onFocus: null,
     get jump() {
       for (const { role, pointer } of active.values()) {
         if (role === 'jump' && pointer.isDown) return true;
       }
       return false;
+    },
+    get focusDirX() {
+      for (const e of active.values()) if (e.swiped) return e.focusDirX;
+      return 0;
+    },
+    get focusDirY() {
+      for (const e of active.values()) if (e.swiped) return e.focusDirY;
+      return 0;
     },
     dir(sign) {
       for (const { role, pointer } of active.values()) {
@@ -104,9 +130,15 @@ function createTouch(scene, pressed) {
       }
       return false;
     },
+    get focusHeld() {
+      for (const e of active.values()) {
+        if (e.swiped && e.pointer.isDown) return true;
+      }
+      return false;
+    },
   };
 
-  scene.input.on('pointerdown', (p) => {
+  const begin = (p) => {
     const zone =
       p.y < scene.scale.height * JUMP_ZONE_FRAC
         ? 'jump'
@@ -118,31 +150,112 @@ function createTouch(scene, pressed) {
       pointer: p,
       x0: p.x,
       y0: p.y,
-      t0: performance.now(),
+      t0: p.downTime ?? p.timeStamp ?? performance.now(),
       swiped: false,
+      disqualified: false,
+      focusDirX: 0,
+      focusDirY: 0,
     });
+    if (zone === 'jump') pressed.jump = true;
     if (touch.onZonePress) touch.onZonePress(zone);
-  });
+  };
 
-  scene.input.on('pointermove', (p) => {
+  const move = (p) => {
     const e = active.get(p.id);
-    if (!e || e.swiped || !p.isDown) return;
-    if (performance.now() - e.t0 > SWIPE_MS) return;
+    if (!e || !p.isDown) return;
+    if (e.role !== 'move') return;
     const dx = p.x - e.x0;
     const dy = p.y - e.y0;
     const thresh = scene.scale.width * SWIPE_FRAC;
-    if (Math.abs(dx) >= thresh && Math.abs(dx) > Math.abs(dy)) {
-      e.swiped = true;
-      pressed.dash = true;
-      pressed.dashDir = dx > 0 ? 1 : -1;
-    } else if (dy >= thresh && Math.abs(dy) > Math.abs(dx)) {
-      e.swiped = true;
-      pressed.spike = true;
+    const elapsed = (p.timeStamp ?? performance.now()) - e.t0;
+    const quickVertical = Math.abs(dy) >= thresh && Math.abs(dy) > Math.abs(dx) * 1.2;
+    if (
+      elapsed < SWIPE_MIN_MS &&
+      !quickVertical &&
+      Math.max(Math.abs(dx), Math.abs(dy)) >= thresh * 0.5
+    ) {
+      e.disqualified = true;
     }
-  });
+    if (
+      !e.swiped &&
+      !e.disqualified &&
+      (elapsed >= SWIPE_MIN_MS || quickVertical) &&
+      elapsed <= SWIPE_MAX_MS &&
+      Math.max(Math.abs(dx), Math.abs(dy)) >= thresh
+    ) {
+      e.swiped = true;
+      pressed.focus = true;
+      touch.onFocus?.();
+    }
+    if (e.swiped) {
+      e.focusDirX = Math.abs(dx) >= thresh * 0.55 ? Math.sign(dx) : 0;
+      e.focusDirY = Math.abs(dy) >= thresh * 0.55 ? Math.sign(dy) : 0;
+      pressed.focusDirX = e.focusDirX;
+      pressed.focusDirY = e.focusDirY;
+    }
+  };
 
-  const drop = (p) => active.delete(p.id);
+  const drop = (p) => {
+    const e = active.get(p.id);
+    if (e?.swiped) pressed.focusReleased = true;
+    active.delete(p.id);
+  };
+  scene.input.on('pointerdown', begin);
+  scene.input.on('pointermove', move);
   scene.input.on('pointerup', drop);
   scene.input.on('pointerupoutside', drop);
+
+  // Phaser receives events only on the letterboxed canvas. Capture touches
+  // that begin in the side margins and map them to the nearest logical edge.
+  if (typeof window !== 'undefined') {
+    const canvas = scene.sys.game.canvas;
+    const mapped = new Map();
+    const mapEvent = (event, isDown = true) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+      const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+      return {
+        id: `margin-${event.pointerId}`,
+        x: x * scene.scale.width,
+        y: y * scene.scale.height,
+        downTime: event.timeStamp,
+        timeStamp: event.timeStamp,
+        isDown,
+      };
+    };
+    const outsideCanvas = (event) => event.target !== canvas && !canvas.contains(event.target);
+    const onDown = (event) => {
+      if (event.pointerType !== 'touch' || !outsideCanvas(event)) return;
+      const pointer = mapEvent(event);
+      mapped.set(event.pointerId, pointer);
+      begin(pointer);
+      event.preventDefault();
+    };
+    const onMove = (event) => {
+      const pointer = mapped.get(event.pointerId);
+      if (!pointer) return;
+      Object.assign(pointer, mapEvent(event));
+      move(pointer);
+      event.preventDefault();
+    };
+    const onUp = (event) => {
+      const pointer = mapped.get(event.pointerId);
+      if (!pointer) return;
+      Object.assign(pointer, mapEvent(event, false));
+      drop(pointer);
+      mapped.delete(event.pointerId);
+      event.preventDefault();
+    };
+    window.addEventListener('pointerdown', onDown, { passive: false });
+    window.addEventListener('pointermove', onMove, { passive: false });
+    window.addEventListener('pointerup', onUp, { passive: false });
+    window.addEventListener('pointercancel', onUp, { passive: false });
+    scene.events.once('shutdown', () => {
+      window.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    });
+  }
   return touch;
 }

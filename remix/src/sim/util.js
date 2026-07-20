@@ -12,6 +12,17 @@ export function rectrect(rect1, rect2) {
   );
 }
 
+// Focus uses strict overlap so moving along a floor or support top does not
+// count as entering that surface.
+export function rectrectStrict(rect1, rect2) {
+  return (
+    rect1.x < rect2.x + rect2.w &&
+    rect1.x + rect1.w > rect2.x &&
+    rect1.y < rect2.y + rect2.h &&
+    rect1.y + rect1.h > rect2.y
+  );
+}
+
 export function constrain(v, lo, hi) {
   return Math.min(Math.max(v, lo), hi);
 }
@@ -19,7 +30,7 @@ export function constrain(v, lo, hi) {
 // Block-on-block stacking test: strict in x (unlike the inclusive rectrect),
 // so edge-touching neighbors don't count as support. On the SPAWN_GRID this
 // guarantees every seated block overlaps its support by >= SPAWN_GRID px.
-// Player and powerup collisions still use the faithful inclusive rectrect.
+// Player and block collisions use the faithful inclusive rectangle test.
 export function stackContact(a, b) {
   return (
     a.x + a.w > b.x &&

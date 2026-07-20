@@ -6,19 +6,14 @@ import {
   COLOR_PLAYER,
   COLOR_PLAYER_BORDER,
   COLOR_PLAYER_MOUTH,
-  COLOR_SHIELD,
 } from '../constants.js';
 
 export function drawPlayer(gfx, p, tick, opts = {}) {
-  // stretch tall while moving fast vertically, squash flat just after landing;
-  // dash flattens wide, spike windup/plunge stretches tall
+  // Stretch along the committed Focus direction; otherwise keep the remake's
+  // jump and landing squash so motion reads without changing the collision box.
   let stretch;
-  if (p.dashTimer > 0) {
-    stretch = -0.35;
-  } else if (p.spikeWindup > 0) {
-    stretch = 0.4;
-  } else if (p.spiking) {
-    stretch = 0.3;
+  if (p.focusTimer > 0) {
+    stretch = Math.abs(p.focusDY) > Math.abs(p.focusDX) ? 0.34 : -0.34;
   } else if (p.landSquash > 0) {
     stretch = -0.16 * (p.landSquash / 8);
   } else if (p.offGround > 2) {
@@ -27,14 +22,6 @@ export function drawPlayer(gfx, p, tick, opts = {}) {
     stretch = 0;
   }
 
-  // ember glow at high Heat — the flow state is visible on the character
-  if (p.heat >= 6 && !opts.ghost) {
-    const cx = p.x + p.w / 2;
-    const cy = p.y + p.h / 2;
-    const rr = 1.3 + 0.08 * Math.sin(tick * 0.3);
-    gfx.fillStyle(p.heat >= 8 ? 0xffd700 : 0xff9f1c, 0.16);
-    gfx.fillEllipse(cx, cy, p.w * rr * 1.6, p.h * rr * 1.6);
-  }
   const w = p.w * (1 - stretch);
   const h = p.h * (1 + stretch);
   const x = p.x - (w - p.w) / 2; // keep centered horizontally
@@ -95,13 +82,4 @@ export function drawPlayer(gfx, p, tick, opts = {}) {
   gfx.fillStyle(opts.mouth ?? COLOR_PLAYER_MOUTH);
   gfx.fillRoundedRect(x + w * mouthX, y + h * mouthY, w * 0.32, h * mouthH, 3);
 
-  if (p.shieldTimer > 0) {
-    const cx = p.x + p.w / 2;
-    const cy = p.y + p.h / 2;
-    const r = 1.414 + 0.06 * Math.sin(tick * 0.2); // gentle pulse
-    gfx.lineStyle(6, COLOR_SHIELD, 0.22);
-    gfx.strokeEllipse(cx, cy, p.w * r * 1.15, p.h * r * 1.15);
-    gfx.lineStyle(2.5, COLOR_SHIELD, 0.95);
-    gfx.strokeEllipse(cx, cy, p.w * r, p.h * r);
-  }
 }

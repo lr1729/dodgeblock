@@ -20,6 +20,7 @@ const FLASH_ALPHA = 0.09;
 
 // survives scene restarts within a session, resets on page reload
 const uses = { jump: 0, left: 0, right: 0 };
+let focusLearned = false;
 
 export class TouchHints {
   constructor(scene, touch) {
@@ -43,7 +44,31 @@ export class TouchHints {
       right: icon('▶', (GAME_W * 3) / 4, JUMP_H + (GAME_H - JUMP_H) / 2, 'right'),
     };
 
+    this.focusHint = scene.add.graphics().setAlpha(focusLearned ? 0 : 0.2);
+    this.focusHint.lineStyle(3, 0x37d6d0, 1);
+    this.focusHint.strokeCircle(690, 416, 7);
+    this.focusHint.lineBetween(690, 405, 690, 350);
+    this.focusHint.fillStyle(0x37d6d0, 1);
+    this.focusHint.fillTriangle(682, 359, 698, 359, 690, 347);
+    if (!focusLearned) {
+      scene.tweens.add({
+        targets: this.focusHint,
+        y: -6,
+        alpha: { from: 0.1, to: 0.22 },
+        duration: 850,
+        yoyo: true,
+        repeat: -1,
+        ease: 'Sine.easeInOut',
+      });
+    }
+
     touch.onZonePress = (zone) => this.press(zone);
+    touch.onFocus = () => {
+      if (focusLearned) return;
+      focusLearned = true;
+      scene.tweens.killTweensOf(this.focusHint);
+      scene.tweens.add({ targets: this.focusHint, alpha: 0, duration: 350 });
+    };
   }
 
   press(zone) {

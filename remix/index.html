@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <title>BLOCKSTORM — a DodgeBlock remix</title>
+    <title>DodgeBlock</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect x='2' y='2' width='28' height='28' rx='6' fill='%23e8433f' stroke='%23a32b28' stroke-width='2'/><circle cx='11' cy='13' r='3.5' fill='white'/><circle cx='21' cy='13' r='3.5' fill='white'/><circle cx='11.8' cy='13.5' r='1.7' fill='%231c1c1c'/><circle cx='21.8' cy='13.5' r='1.7' fill='%231c1c1c'/><rect x='11' y='21' width='10' height='4.5' rx='2' fill='%235c1f1d'/></svg>">
     <style>
       html,
@@ -12,63 +12,46 @@
         padding: 0;
         width: 100%;
         height: 100%;
+        min-height: 100dvh;
         overflow: hidden;
-        background: #10161d;
+        background: #9fd6ee;
+        color-scheme: dark;
         overscroll-behavior: none;
       }
+      body {
+        position: fixed;
+        inset: 0;
+      }
       #game {
-        width: 100%;
-        height: 100%;
+        position: absolute;
+        inset:
+          env(safe-area-inset-top, 0)
+          env(safe-area-inset-right, 0)
+          env(safe-area-inset-bottom, 0)
+          env(safe-area-inset-left, 0);
+        display: grid;
+        place-items: center;
+        min-width: 0;
+        min-height: 0;
+        touch-action: none;
       }
       #game canvas {
         display: block;
-        margin: 0 auto;
+        margin: 0 !important;
+        width: min(100%, calc(100dvh * 8 / 5)) !important;
+        height: auto !important;
+        aspect-ratio: 8 / 5;
+        max-width: 100%;
+        max-height: 100%;
         touch-action: none;
         user-select: none;
         -webkit-user-select: none;
         -webkit-tap-highlight-color: transparent;
       }
-      /* landscape-only on touch devices: cover the game with a rotate prompt
-         in portrait (browsers can't force an orientation, so we ask) */
-      #rotate {
-        display: none;
-        position: fixed;
-        inset: 0;
-        z-index: 10;
-        background: #10161d;
-        color: #e8eef4;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 12px;
-        font-family: system-ui, sans-serif;
-        text-align: center;
-      }
-      /* CSS-drawn phone outline — emoji glyphs aren't reliable everywhere */
-      #rotate .icon {
-        width: 36px;
-        height: 64px;
-        border: 3px solid #e8eef4;
-        border-radius: 8px;
-        animation: rotate-nudge 1.6s ease-in-out infinite;
-      }
-      @keyframes rotate-nudge {
-        0%, 55%, 100% { transform: rotate(0deg); }
-        25% { transform: rotate(-90deg); }
-      }
-      @media (orientation: portrait) and (pointer: coarse) and (hover: none) {
-        #rotate {
-          display: flex;
-        }
-      }
     </style>
   </head>
   <body>
     <div id="game"></div>
-    <div id="rotate">
-      <div class="icon"></div>
-      <p>Rotate your device to play</p>
-    </div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

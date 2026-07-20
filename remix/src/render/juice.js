@@ -4,12 +4,7 @@
 // executed step is still exactly STEP_MS of sim time, so determinism holds:
 // juice changes WHEN steps run, never what they compute.
 //
-// Rules (from the design doc):
-// - hitstop sources: perfect graze 3f, spike shatter 3f, death 8f; min 500ms
-//   apart; never during a dash (the caller checks)
-// - slow-mo sources: crest window only, plus the death flourish
-// - shake: one source at a time, priority-ordered, capped at 10px, applied
-//   to the world container (never the camera) so the HUD stays rock-steady
+// Shake is capped and applied to the world container so the HUD stays steady.
 
 import { STEP_MS } from '../constants.js';
 
@@ -25,7 +20,7 @@ export class Juice {
     this.shakeDur = 1;
     this.shakePriority = 0;
     this.shakeAxis = 'both';
-    this.leanX = 0; // camera lean target (dash), eased in offset()
+    this.leanX = 0; // Focus lean target, eased in offset()
     this.leanCur = 0;
     this.flashes = [];
   }
@@ -78,7 +73,7 @@ export class Juice {
     this.shakeAxis = axis;
   }
 
-  // world-container offset for this frame (shake + dash lean)
+  // World-container offset for this frame (shake plus Focus lean).
   offset() {
     let ox = this.leanCur;
     let oy = 0;

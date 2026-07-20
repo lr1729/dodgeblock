@@ -24,6 +24,15 @@ const game = new Phaser.Game({
   scene: [MenuScene, GameScene, GameOverScene],
 });
 
+// Mobile browser chrome and orientation changes can alter the visual viewport
+// without producing a reliable layout-sized window resize. Refreshing is
+// presentation-only; the 800x500 simulation and seeded history stay fixed.
+const refreshScale = () => game.scale.refresh();
+window.visualViewport?.addEventListener('resize', refreshScale);
+window.addEventListener('orientationchange', () => {
+  requestAnimationFrame(refreshScale);
+});
+
 // handles for devtools poking and automated tests
 window.game = game;
 window.sfx = sfx;

@@ -1,76 +1,68 @@
-// Node-side determinism gate: the sim must be a pure function of
-// (seed, input history). Runs the same scripted input twice and compares
-// state hashes at checkpoints. No browser, no Phaser.
-//
-//   node tests/determinism.mjs
-
+import assert from 'node:assert/strict';
 import { Sim } from '../src/sim/sim.js';
 
-// scripted input: deterministic pseudo-play (jump bursts, direction sweeps)
-function inputAt(f) {
-  return {
-    up: f % 97 < 9,
-    down: f % 211 < 4,
-    left: f % 140 < 45,
-    right: f % 140 >= 70 && f % 140 < 115,
-    jumpPressed: f % 97 === 0,
-    dashPressed: f % 233 === 0,
-  };
-}
+let failures = 0;
 
-function run(seed, frames) {
-  const sim = new Sim(seed);
-  const checkpoints = [];
-  const eventCounts = new Map();
-  sim.events.tap = (name) =>
-    eventCounts.set(name, (eventCounts.get(name) ?? 0) + 1);
-  for (let f = 1; f <= frames && !sim.dead; f++) {
-    sim.step(inputAt(f));
-    if (f % 500 === 0) checkpoints.push(sim.hash());
-  }
-  checkpoints.push(sim.hash());
-  return {
-    checkpoints,
-    events: [...eventCounts.entries()].sort().map(([k, v]) => `${k}:${v}`).join(','),
-    dead: sim.dead,
-    frame: sim.frame,
-    score: sim.score,
-  };
-}
-
-let failed = false;
-for (const seed of [42, 7, 123456789]) {
-  const a = run(seed, 10000);
-  const b = run(seed, 10000);
-  const same =
-    JSON.stringify(a.checkpoints) === JSON.stringify(b.checkpoints) &&
-    a.events === b.events;
-  if (!same) {
-    failed = true;
-    console.error(`FAIL seed=${seed}: runs diverged`);
-    for (let i = 0; i < a.checkpoints.length; i++) {
-      if (a.checkpoints[i] !== b.checkpoints[i]) {
-        console.error(`  first divergence at checkpoint ${i}:`);
-        console.error(`    a: ${a.checkpoints[i]}`);
-        console.error(`    b: ${b.checkpoints[i]}`);
-        break;
-      }
-    }
-  } else {
-    console.log(
-      `ok seed=${seed}: ${a.frame} frames, score ${a.score}, dead=${a.dead}, events {${a.events}}`,
-    );
+function test(name, fn) {
+  try {
+    fn();
+    console.log(`ok ${name}`);
+  } catch (error) {
+    failures++;
+    console.error(`FAIL ${name}`);
+    console.error(error.stack ?? error);
   }
 }
 
-// different seeds must actually differ (guards against a broken rng)
-const x = run(1, 3000);
-const y = run(2, 3000);
-if (JSON.stringify(x.checkpoints) === JSON.stringify(y.checkpoints)) {
-  failed = true;
-  console.error('FAIL: seeds 1 and 2 produced identical runs — rng broken?');
-} else {
-  console.log('ok: different seeds diverge');
+// Run only the authoritative storm systems. Keeping the player far below the
+// arrival horizon makes the local safety veto irrelevant, so this isolates the
+// seeded pacing, material, and placement streams from controller behavior.
+function stormHistory(seed, frames = 7200) {
+  const sim = new Sim(seed, { director: false });
+  const director = sim.director;
+  const drops = [];
+  sim.player.y = 1_000_000;
+  sim.events.tap = (name, payload) => {
+    if (name !== 'stormDrop') return;
+    drops.push([
+      payload.frame,
+      director.phase,
+      payload.type,
+      payload.x,
+      payload.w,
+    ]);
+  };
+
+  for (let frame = 1; frame <= frames; frame++) {
+    sim.frame = frame;
+    director.step();
+  }
+
+  return {
+    drops,
+    phase: director.phase,
+    accumulator: director.spawnAccumulator.toFixed(9),
+    spawnCount: director.spawnCount,
+    rejectedSpawns: director.rejectedSpawns,
+    bag: [...director.materialBag],
+    rng: sim.rng.s,
+  };
 }
 
-process.exit(failed ? 1 : 0);
+test('same seed reproduces the complete spawn history', () => {
+  for (const seed of [1, 42, 0xdecafbad]) {
+    assert.deepEqual(stormHistory(seed), stormHistory(seed), `seed ${seed} diverged`);
+  }
+});
+
+test('different seeds produce diverse placement and material histories', () => {
+  const signatures = new Set();
+  for (let seed = 1; seed <= 10; seed++) {
+    const history = stormHistory(seed, 4800).drops;
+    assert.ok(history.length >= 100, `seed ${seed} produced only ${history.length} drops`);
+    signatures.add(JSON.stringify(history.slice(0, 80)));
+  }
+  assert.ok(signatures.size >= 9, `only ${signatures.size} distinct histories across ten seeds`);
+});
+
+process.exitCode = failures ? 1 : 0;

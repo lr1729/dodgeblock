@@ -1,97 +1,64 @@
-// Altitude zones — pure data consumed by the sim (rules), the background
-// renderer (skies), and the music system (intensity floor). camY only ever
-// rises, so transitions fire once each, in order.
-//
-// Each zone adds exactly ONE new sim behavior: stormfront unlocks wind,
-// cloudtop adds crumble-cloud platforms, aurora adds drift blocks, the void
-// tightens the event cadence.
-
+// Altitude bands are presentation only. They may change sky, ambience, block
+// tint, and music, but never spawn rules, scoring, controls, or physics.
 export const ZONES = [
   {
     id: 'meadow',
     name: 'MEADOW',
     threshold: 0,
-    bonus: 0,
-    skyTop: 0x6ec0f2,
-    skyBottom: 0xd8f0ff,
-    blockTint: 0xffffff, // white = untinted
+    skyTop: 0x75bde0,
+    skyBottom: 0xe4f3f4,
+    blockTint: 0xffffff,
     musicIntensity: 0,
-    cloudAlpha: 0.75,
+    cloudAlpha: 0.72,
     rain: false,
     stars: false,
     aurora: false,
-    cloudPlatforms: false,
-    driftChance: 0,
   },
   {
     id: 'stormfront',
-    name: 'STORMFRONT',
-    threshold: 250,
-    bonus: 250,
-    skyTop: 0x2f3d55,
-    skyBottom: 0x71809b,
-    blockTint: 0xc7d2e4,
+    name: 'STORM LINE',
+    threshold: 900,
+    skyTop: 0x536878,
+    skyBottom: 0xb8c9cf,
+    blockTint: 0xe4e8e8,
     musicIntensity: 1,
-    cloudAlpha: 0.35,
+    cloudAlpha: 0.42,
     rain: true,
     stars: false,
     aurora: false,
-    cloudPlatforms: false,
-    driftChance: 0,
   },
   {
     id: 'cloudtop',
     name: 'CLOUDTOP',
-    threshold: 1200,
-    bonus: 500,
-    skyTop: 0xbfe9ff,
-    skyBottom: 0xfff3d6,
-    blockTint: 0xffedc9,
+    threshold: 2400,
+    skyTop: 0x9fcfe2,
+    skyBottom: 0xf4d9b4,
+    blockTint: 0xfff3dc,
     musicIntensity: 2,
-    cloudAlpha: 0.95,
+    cloudAlpha: 0.9,
     rain: false,
     stars: false,
     aurora: false,
-    cloudPlatforms: true,
-    driftChance: 0,
   },
   {
     id: 'aurora',
     name: 'AURORA',
-    threshold: 4000,
-    bonus: 750,
-    skyTop: 0x241b47,
-    skyBottom: 0xa8659e,
-    blockTint: 0xd9c4f2,
+    threshold: 4800,
+    skyTop: 0x2d3142,
+    skyBottom: 0x746d83,
+    blockTint: 0xdce8df,
     musicIntensity: 3,
-    cloudAlpha: 0.15,
+    cloudAlpha: 0.12,
     rain: false,
     stars: true,
     aurora: true,
-    cloudPlatforms: false,
-    driftChance: 0.25,
-  },
-  {
-    id: 'void',
-    name: 'THE VOID',
-    threshold: 10000,
-    bonus: 1000,
-    skyTop: 0x04060e,
-    skyBottom: 0x161f36,
-    blockTint: 0x9fb4d8,
-    musicIntensity: 4,
-    cloudAlpha: 0,
-    rain: false,
-    stars: true,
-    aurora: false,
-    cloudPlatforms: false,
-    driftChance: 0.25,
   },
 ];
 
 export function zoneIndexFor(camY) {
+  const altitude = Math.max(0, Number.isFinite(camY) ? camY : 0);
   for (let i = ZONES.length - 1; i >= 0; i--) {
-    if (camY >= ZONES[i].threshold) return i;
+    if (altitude >= ZONES[i].threshold) return i;
   }
   return 0;
 }

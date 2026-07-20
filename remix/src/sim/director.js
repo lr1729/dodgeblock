@@ -1,211 +1,327 @@
-// The Director: tension-release pacing, altitude zones, and set-piece event
-// scheduling. Ticked first inside sim.step so its outputs (rateMul, eventMul,
-// wind, spawn overrides) apply the same frame. Everything is keyed to
-// sim.frame / sim.camY / sim.rng — no wall clock, fully deterministic.
-
 import {
-  DIRECTOR_FLAT_FRAMES,
-  CALM_MUL,
-  SURGE_MUL,
-  CALM_FRAMES,
-  BUILD_FRAMES,
-  SURGE_FRAMES,
-  RELEASE_FRAMES,
-  CLOUD_PLAT_W,
-  CLOUD_PLAT_H,
-  CLOUD_PLAT_EVERY,
-  CLOUD_PLAT_SPEED,
-  GAME_W,
+  ARENA_W,
+  ARENA_X,
+  ARRIVAL_CLUSTER_FRAMES,
+  BLOCK_H,
+  BLOCK_SPAWN_ABOVE,
+  BLOCK_W,
+  GROUND,
+  OPENING_FRAMES,
+  PHASES,
+  SPAWN_ATTEMPTS,
+  SPAWN_GRID,
+  SPAWN_RATE_BODY,
+  SPAWN_RATE_START,
+  SPAWN_RATE_TAIL,
+  SPAWN_RATE_TAU_SECONDS,
+  TELEGRAPH_FRAMES,
 } from '../constants.js';
 import { ZONES, zoneIndexFor } from '../zones.js';
-import { EVENT_TYPES, DEBUT_ORDER } from './eventTypes.js';
+import { BLOCK_TYPES } from './blockTypes.js';
+import { isObviousLocalCheckmate } from './reachability.js';
+
+const MATERIAL_BAG = [
+  'wood', 'wood', 'wood', 'wood', 'wood', 'wood',
+  'wood', 'wood', 'wood', 'wood', 'wood', 'wood',
+  'gravel', 'gravel', 'gravel', 'beam',
+];
+const BEAM_WIDTH = BLOCK_W + SPAWN_GRID * 2;
+
+function clamp(value, lo, hi) {
+  return Math.max(lo, Math.min(hi, value));
+}
+
+export function naturalSpawnRate(frame) {
+  const seconds = Math.max(0, frame) / 60;
+  const body = SPAWN_RATE_BODY * (1 - Math.exp(-seconds / SPAWN_RATE_TAU_SECONDS));
+  const tail = SPAWN_RATE_TAIL * Math.sqrt(seconds / 60);
+  return SPAWN_RATE_START + body + tail;
+}
+
+export function framesToY(block, targetY, limit = 240) {
+  let y = block.y;
+  let velocity = block.yVel ?? 0;
+  if (y + block.h >= targetY) return 0;
+  for (let frame = 1; frame <= limit; frame++) {
+    velocity = Math.min(block.spec.maxFallSpeed, velocity + block.spec.gravity);
+    y += velocity;
+    if (y + block.h >= targetY) return frame;
+  }
+  return Infinity;
+}
+
+function phaseCorrelation(phase) {
+  if (phase === 'surge') return 0.58;
+  if (phase === 'build') return 0.3;
+  if (phase === 'release') return 0.12;
+  return 0.18;
+}
 
 export class Director {
   constructor(sim) {
     this.sim = sim;
-    this.zoneIndex = 0;
-    // phase machine
-    this.phase = 'flat';
-    this.phaseT = 0;
-    this.phaseDur = DIRECTOR_FLAT_FRAMES;
-    this.rateMul = 1;
-    // event machine
-    this.eventMul = 1;
-    this.wind = 0; // x-accel applied to player + falling blocks
-    this.fogged = false; // whiteout hides warning strips
-    this.activeEvent = null; // { spec, t }
-    this.pendingEvent = null; // { spec, telegraphLeft }
-    this.eventData = {}; // per-event scratch, reset at each telegraph
-    this.debutIndex = 0; // next entry of DEBUT_ORDER to script
-    this.nextEventAt = 0; // frame of the next scheduling attempt
-    this.lastEventId = null;
-    this.calmUntil = 0; // forced calm after each event
+    this.zoneIndex = zoneIndexFor(sim.camY ?? 0);
+    this.phaseIndex = -1;
+    this.phase = 'opening';
+    this.phaseFrame = 0;
+    this.elapsedFrames = 0;
+    this.stage = 0;
+    this.pressure = 0;
+    this.blockRate = SPAWN_RATE_START;
+    this.spawnAccumulator = 0;
+    this.spawnCount = 0;
+    this.rejectedSpawns = 0;
+    this.reachabilityChecks = 0;
+    this.lastSpawnX = null;
+    this.materialBag = [];
+    this.forecasts = [];
+
+    this.lastDrop = null;
   }
 
   get zone() {
     return ZONES[this.zoneIndex];
   }
 
-  step() {
-    const sim = this.sim;
-
-    // --- zone transitions (camY is monotonic → fire once, in order) ---
-    const z = zoneIndexFor(sim.camY);
-    if (z !== this.zoneIndex) {
-      this.zoneIndex = z;
-      sim.scoreBonus += ZONES[z].bonus;
-      sim.events.emit('zoneChange', { index: z, zone: ZONES[z] });
-    }
-
-    this.stepPhases();
-    this.stepEvents();
-    this.stepZoneRules();
+  snapshot() {
+    return {
+      zoneIndex: this.zoneIndex,
+      phaseIndex: this.phaseIndex,
+      phase: this.phase,
+      phaseFrame: this.phaseFrame,
+      elapsedFrames: this.elapsedFrames,
+      stage: this.stage,
+      pressure: this.pressure,
+      blockRate: this.blockRate,
+      spawnAccumulator: this.spawnAccumulator,
+      spawnCount: this.spawnCount,
+      rejectedSpawns: this.rejectedSpawns,
+      reachabilityChecks: this.reachabilityChecks,
+      lastSpawnX: this.lastSpawnX,
+      materialBag: [...this.materialBag],
+      forecasts: this.forecasts.map(({ spec: _spec, ...forecast }) => ({ ...forecast })),
+      lastDrop: this.lastDrop ? { ...this.lastDrop } : null,
+    };
   }
 
-  // CALM -> BUILD -> SURGE -> RELEASE, durations rolled per cycle. The first
-  // 20s run flat so the opening feels like classic DodgeBlock.
-  stepPhases() {
-    const rng = this.sim.rng;
-    const isVoid = this.zone.id === 'void';
-    const calmMul = isVoid ? 0.7 : CALM_MUL;
-    this.phaseT++;
-    if (this.phaseT >= this.phaseDur) {
-      this.phaseT = 0;
-      const shrink = isVoid ? 0.75 : 1; // late game breathes less
-      switch (this.phase) {
-        case 'flat':
-        case 'release':
-          this.phase = 'calm';
-          this.phaseDur = Math.round(rng.int(CALM_FRAMES[0], CALM_FRAMES[1]) * shrink);
-          break;
-        case 'calm':
-          this.phase = 'build';
-          this.phaseDur = Math.round(rng.int(BUILD_FRAMES[0], BUILD_FRAMES[1]) * shrink);
-          break;
-        case 'build':
-          this.phase = 'surge';
-          this.phaseDur = Math.round(rng.int(SURGE_FRAMES[0], SURGE_FRAMES[1]) * shrink);
-          break;
-        case 'surge':
-          this.phase = 'release';
-          this.phaseDur = RELEASE_FRAMES;
-          break;
-      }
-      this.sim.events.emit('phase', { phase: this.phase });
-    }
-    const t = this.phaseT / this.phaseDur;
-    switch (this.phase) {
-      case 'flat':
-        this.rateMul = 1;
-        break;
-      case 'calm':
-        this.rateMul = calmMul;
-        break;
-      case 'build':
-        this.rateMul = calmMul + (SURGE_MUL - calmMul) * t;
-        break;
-      case 'surge':
-        this.rateMul = SURGE_MUL;
-        break;
-      case 'release':
-        this.rateMul = SURGE_MUL + (calmMul - SURGE_MUL) * t;
-        break;
-    }
-    // events are always followed by a stretch of forced calm — set pieces
-    // resolve into relief
-    if (this.sim.frame < this.calmUntil && !this.activeEvent) {
-      this.rateMul = Math.min(this.rateMul, calmMul);
+  restore(state) {
+    const { forecasts, materialBag, lastDrop, ...values } = state;
+    Object.assign(this, values);
+    this.materialBag = [...materialBag];
+    this.forecasts = forecasts.map((forecast) => ({
+      ...forecast,
+      spec: BLOCK_TYPES.get(forecast.type),
+    }));
+    this.lastDrop = lastDrop ? { ...lastDrop } : null;
+  }
+
+  step(timeScale = 1) {
+    this.updateZone();
+    this.updatePacing(timeScale);
+    this.advanceForecasts(timeScale);
+    this.spawnFromPressure(timeScale);
+  }
+
+  advanceForecasts(timeScale = 1) {
+    for (let i = 0; i < this.forecasts.length; i++) {
+      const forecast = this.forecasts[i];
+      forecast.frames -= timeScale;
+      if (forecast.frames > 0) continue;
+      this.forecasts.splice(i--, 1);
+      this.spawnEntry(forecast);
     }
   }
 
-  stepEvents() {
-    const sim = this.sim;
-    const rng = sim.rng;
+  updateZone() {
+    const next = zoneIndexFor(this.sim.camY ?? 0);
+    if (next === this.zoneIndex) return;
+    const direction = next > this.zoneIndex ? 1 : -1;
+    while (this.zoneIndex !== next) {
+      this.zoneIndex += direction;
+      this.sim.events.emit('zoneChange', { index: this.zoneIndex, zone: this.zone });
+    }
+  }
 
-    if (this.pendingEvent) {
-      if (--this.pendingEvent.telegraphLeft <= 0) {
-        this.activeEvent = { spec: this.pendingEvent.spec, t: 0 };
-        this.pendingEvent = null;
-        this.activeEvent.spec.onStart?.(sim, this);
-        sim.events.emit('eventStart', { id: this.activeEvent.spec.id });
+  updatePacing(timeScale = 1) {
+    this.elapsedFrames += timeScale;
+    this.stage = Math.floor(Math.max(0, this.elapsedFrames) / 3600);
+    this.phaseFrame += timeScale;
+
+    if (this.phase === 'opening') {
+      if (this.phaseFrame >= OPENING_FRAMES) {
+        // The opening is already the quiet read-in, so enter Build instead of
+        // making the player sit through a second consecutive calm period.
+        this.phaseIndex = PHASES.findIndex((phase) => phase.id === 'build');
+        this.phase = PHASES[this.phaseIndex].id;
+        this.phaseFrame = 0;
+        this.sim.events.emit('phaseChange', { phase: this.phase });
       }
-      return;
+    } else {
+      let spec = PHASES[this.phaseIndex];
+      if (this.phaseFrame >= spec.frames) {
+        this.phaseIndex = (this.phaseIndex + 1) % PHASES.length;
+        spec = PHASES[this.phaseIndex];
+        this.phase = spec.id;
+        this.phaseFrame = 0;
+        this.sim.events.emit('phaseChange', { phase: this.phase });
+      }
     }
 
-    if (this.activeEvent) {
-      const ev = this.activeEvent;
-      ev.t++;
-      ev.spec.onStep?.(sim, this, ev.t);
-      if (ev.t >= ev.spec.duration) {
-        ev.spec.onEnd?.(sim, this);
-        sim.events.emit('eventEnd', { id: ev.spec.id });
-        this.lastEventId = ev.spec.id;
-        this.activeEvent = null;
-        this.calmUntil = sim.frame + 360; // 6s exhale
-        this.scheduleNext();
-      }
-      return;
+    let multiplier = 1;
+    if (this.phase !== 'opening') {
+      const spec = PHASES[this.phaseIndex];
+      const t = clamp(this.phaseFrame / spec.frames, 0, 1);
+      multiplier = spec.from + (spec.to - spec.from) * t;
     }
+    this.blockRate = naturalSpawnRate(this.elapsedFrames) * multiplier;
+    this.pressure = clamp((this.blockRate - SPAWN_RATE_START) / 5.6, 0, 1);
+  }
 
-    if (sim.frame < DIRECTOR_FLAT_FRAMES / 2) return; // no events in the opening
-    if (this.nextEventAt === 0) this.scheduleNext();
-    if (sim.frame < this.nextEventAt || sim.frame < this.calmUntil) return;
-
-    // debut order first — every run keeps unveiling something new — then the
-    // zone's random pool
-    let spec = null;
-    while (this.debutIndex < DEBUT_ORDER.length) {
-      const cand = EVENT_TYPES.get(DEBUT_ORDER[this.debutIndex]);
-      if (!cand) {
-        this.debutIndex++; // not registered (yet) — skip
-        continue;
-      }
-      if (cand.minZone > this.zoneIndex) break; // debut waits for its zone
-      this.debutIndex++;
-      spec = cand;
-      break;
-    }
-    if (!spec) {
-      const pool = [...EVENT_TYPES.values()].filter(
-        (e) =>
-          e.minZone <= this.zoneIndex &&
-          DEBUT_ORDER.indexOf(e.id) < this.debutIndex &&
-          e.id !== this.lastEventId,
-      );
-      if (!pool.length) {
-        this.scheduleNext();
+  spawnFromPressure(timeScale = 1) {
+    this.spawnAccumulator += (this.blockRate / 60) * timeScale;
+    let spawned = 0;
+    while (this.spawnAccumulator >= 1 && spawned < 3) {
+      const type = this.peekMaterial();
+      const entry = this.findSpawn(type);
+      if (!entry) {
+        this.rejectedSpawns++;
+        this.spawnAccumulator = Math.min(this.spawnAccumulator, 1);
         return;
       }
-      spec = rng.pick(pool);
+      this.consumeMaterial();
+      this.commitEntry(entry);
+      this.spawnAccumulator--;
+      spawned++;
     }
-    this.pendingEvent = { spec, telegraphLeft: spec.telegraph };
-    this.eventData = {};
-    spec.onTelegraph?.(sim, this);
-    sim.events.emit('eventTelegraph', {
-      id: spec.id,
-      telegraph: spec.telegraph,
-    });
   }
 
-  scheduleNext() {
-    const isVoid = this.zone.id === 'void';
-    const [lo, hi] = isVoid ? [900, 1500] : [1200, 2100]; // 15-25s / 20-35s
-    this.nextEventAt = this.sim.frame + this.sim.rng.int(lo, hi);
+  peekMaterial() {
+    if (this.spawnCount < 4) return 'wood';
+    if (!this.materialBag.length) this.refillMaterialBag();
+    return this.materialBag[0];
   }
 
-  // per-zone standing rules: crumble-cloud platforms (Cloudtop)
-  stepZoneRules() {
-    const sim = this.sim;
-    if (this.zone.cloudPlatforms && sim.frame % CLOUD_PLAT_EVERY === 0) {
-      const fromLeft = sim.rng.chance(0.5);
-      sim.platforms.push({
-        x: fromLeft ? -CLOUD_PLAT_W - 20 : GAME_W + 20,
-        y: -sim.camY + sim.rng.int(60, 260),
-        w: CLOUD_PLAT_W,
-        h: CLOUD_PLAT_H,
-        vx: fromLeft ? CLOUD_PLAT_SPEED : -CLOUD_PLAT_SPEED,
-        crumbleAt: -1, // set on first touch
-      });
+  consumeMaterial() {
+    if (this.spawnCount >= 4) this.materialBag.shift();
+  }
+
+  refillMaterialBag() {
+    this.materialBag = [...MATERIAL_BAG];
+    for (let i = this.materialBag.length - 1; i > 0; i--) {
+      const j = this.sim.rng.int(0, i + 1);
+      [this.materialBag[i], this.materialBag[j]] = [this.materialBag[j], this.materialBag[i]];
     }
+  }
+
+  findSpawn(type) {
+    const width = type === 'beam' ? BEAM_WIDTH : BLOCK_W;
+    const maxCol = Math.floor((ARENA_W - width) / SPAWN_GRID);
+    for (let attempt = 0; attempt < SPAWN_ATTEMPTS; attempt++) {
+      let col;
+      if (
+        this.lastSpawnX !== null &&
+        this.sim.rng.chance(phaseCorrelation(this.phase))
+      ) {
+        const previous = Math.round((this.lastSpawnX - ARENA_X) / SPAWN_GRID);
+        col = clamp(previous + this.sim.rng.int(-8, 9), 0, maxCol);
+      } else {
+        col = this.sim.rng.int(0, maxCol + 1);
+      }
+      const entry = { col, type, w: width };
+      if (!this.wouldCheckmate(entry)) return entry;
+    }
+    return null;
+  }
+
+  wouldCheckmate(entry) {
+    const spec = BLOCK_TYPES.get(entry.type);
+    if (!spec?.lethal) return false;
+
+    const proposed = {
+      x: ARENA_X + entry.col * SPAWN_GRID,
+      y: this.spawnYFor(entry),
+      yVel: 0,
+      w: entry.w,
+      h: BLOCK_H,
+      spec,
+      type: entry.type,
+      frames: TELEGRAPH_FRAMES,
+    };
+    if (!this.needsReachabilityCheck(proposed)) return false;
+    this.reachabilityChecks++;
+    return isObviousLocalCheckmate(this.sim, proposed, this.forecasts);
+  }
+
+  needsReachabilityCheck(proposed) {
+    const p = this.sim.player;
+    const near = (block, margin = 90) =>
+      p.x + p.w >= block.x - margin && p.x <= block.x + block.w + margin;
+    if (near(proposed)) return true;
+
+    const proposedArrival = TELEGRAPH_FRAMES + framesToY(proposed, p.y);
+    const existing = [
+      ...this.sim.blocks.falling.map((block) => ({ ...block, frames: 0 })),
+      ...this.forecasts,
+    ];
+    for (const threat of existing) {
+      if (!threat.spec?.lethal || !near(threat)) continue;
+      const arrival = (threat.frames ?? 0) + framesToY(threat, p.y);
+      if (Math.abs(arrival - proposedArrival) > ARRIVAL_CLUSTER_FRAMES) continue;
+      const gap = Math.max(
+        0,
+        proposed.x - (threat.x + threat.w),
+        threat.x - (proposed.x + proposed.w),
+      );
+      if (gap <= 180) return true;
+    }
+    return false;
+  }
+
+  spawnYFor(entry) {
+    const surface = this.sim.blocks.surfaceLayers();
+    const cells = Math.ceil(entry.w / SPAWN_GRID);
+    let localTop = 0;
+    for (let i = 0; i < cells; i++) {
+      localTop = Math.max(localTop, surface[entry.col + i] ?? 0);
+    }
+    const aboveCamera = -this.sim.camY - BLOCK_SPAWN_ABOVE;
+    const aboveTerrain = GROUND.y - localTop * BLOCK_H - BLOCK_SPAWN_ABOVE;
+    return Math.min(aboveCamera, aboveTerrain);
+  }
+
+  commitEntry(entry) {
+    const forecast = {
+      ...entry,
+      x: ARENA_X + entry.col * SPAWN_GRID,
+      y: this.spawnYFor(entry),
+      h: BLOCK_H,
+      spec: BLOCK_TYPES.get(entry.type),
+      frames: TELEGRAPH_FRAMES,
+    };
+    this.spawnCount++;
+    this.lastSpawnX = forecast.x;
+    this.forecasts.push(forecast);
+    this.sim.events.emit('stormForecast', forecast);
+  }
+
+  spawnEntry(entry) {
+    // The rail promises x, width, and material. Terrain may rise during the
+    // forecast, so the still-offscreen origin may move only farther upward to
+    // preserve valid occupancy and at least the advertised warning time.
+    const opts = { y: Math.min(entry.y, this.spawnYFor(entry)), reserve: true };
+    if (entry.w !== BLOCK_W) opts.w = entry.w;
+    const block = this.sim.blocks.spawnColumn(
+      entry.col,
+      this.sim.camY,
+      entry.type,
+      opts,
+    );
+    this.lastDrop = {
+      x: block.x,
+      w: block.w,
+      type: block.type,
+      frame: this.sim.frame,
+    };
+    this.sim.events.emit('stormDrop', this.lastDrop);
   }
 }

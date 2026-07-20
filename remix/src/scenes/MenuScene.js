@@ -5,10 +5,13 @@ import { drawSkyGradient, drawCloud } from '../render/fx.js';
 import { drawBlock } from '../render/blockArt.js';
 import { drawPlayer } from '../render/playerArt.js';
 import { sfx } from '../audio.js';
-import { isMobile } from '../input.js';
-import { ZONES } from '../zones.js';
 import { storage } from '../storage.js';
-import { PALETTES, isUnlocked, paletteById } from '../palettes.js';
+
+const FALLING_BLOCKS = [
+  { x: 112, top: 116, bottom: 268, phase: 0.08, shade: 0 },
+  { x: 628, top: 104, bottom: 228, phase: 0.5, shade: 2 },
+  { x: 688, top: 112, bottom: 268, phase: 0.82, shade: 1 },
+];
 
 export class MenuScene extends Phaser.Scene {
   constructor() {
@@ -17,190 +20,108 @@ export class MenuScene extends Phaser.Scene {
 
   create() {
     setupCamera(this, COLOR_BG_GAME);
-    this.daily = false;
 
-    const g = this.add.graphics();
-    drawSkyGradient(g, 0x2f3d55, 0x9fc4e8); // stormier than the classic menu
-    drawCloud(g, 140, 60, 1.1, 0.5);
-    drawCloud(g, 620, 100, 0.8, 0.5);
-    drawCloud(g, 400, 40, 0.6, 0.35);
-
-    // decorative falling blocks with rain streaks
-    g.lineStyle(3, 0xffffff, 0.5);
-    for (const x of [40, 720]) g.lineBetween(x, 50, x, 90);
-    for (const x of [60, 740]) g.lineBetween(x, 40, x, 90);
-    for (const x of [80, 760]) g.lineBetween(x, 50, x, 90);
-    drawBlock(g, { x: 30, y: 100, w: 60, h: 40, shade: 0 });
-    drawBlock(g, { x: 710, y: 100, w: 60, h: 40, shade: 2 });
+    const backdrop = this.add.graphics();
+    drawSkyGradient(backdrop, 0x6fb8dd, 0xe2f1ef);
+    drawCloud(backdrop, 116, 72, 0.82, 0.56);
+    drawCloud(backdrop, 682, 82, 1.05, 0.5);
+    drawCloud(backdrop, 442, 142, 0.58, 0.32);
 
     this.add
-      .text(400, 128, 'BLOCKSTORM', textStyle(76, {
+      .text(400, 66, 'DODGEBLOCK', textStyle(64, {
         color: '#ffffff',
         fontStyle: 'bold',
-        stroke: '#1c2733',
-        strokeThickness: 10,
+        stroke: '#25455d',
+        strokeThickness: 9,
       }))
       .setOrigin(0.5)
-      .setShadow(0, 5, 'rgba(0,0,0,0.35)', 6);
-    this.add
-      .text(400, 178, 'a DodgeBlock remix', textStyle(18, { color: '#dce8f2' }))
-      .setOrigin(0.5)
-      .setAlpha(0.85);
+      .setShadow(0, 5, 'rgba(25, 55, 74, 0.28)', 5);
 
-    const isTouch = isMobile(this);
-    const start = this.add
-      .text(400, 246, isTouch ? 'Tap to start' : 'Click to start', textStyle(32, {
-        color: '#ffffff',
-        fontStyle: 'bold',
-        stroke: '#1c2733',
-        strokeThickness: 6,
-      }))
-      .setOrigin(0.5);
+    this.vignette = this.add.graphics();
+
+    const playButton = this.add
+      .circle(400, 391, 30, 0xe8433f)
+      .setStrokeStyle(2, 0x972d2a)
+      .setName('Play')
+      .setInteractive({ useHandCursor: true });
+    const playIcon = this.add.graphics();
+    playIcon.fillStyle(0xffffff, 1);
+    playIcon.fillTriangle(393, 377, 393, 405, 414, 391);
+
+    playButton.on('pointerover', () => playButton.setFillStyle(0xf1534f));
+    playButton.on('pointerout', () => playButton.setFillStyle(0xe8433f));
     this.tweens.add({
-      targets: start,
-      alpha: 0.35,
-      duration: 700,
+      targets: [playButton, playIcon],
+      y: '-=2',
+      duration: 900,
       yoyo: true,
       repeat: -1,
       ease: 'Sine.easeInOut',
     });
 
-    // --- zone ladder: how high have you been? ---
-    const ladderX = 736;
+    const best = Math.max(0, Math.round(storage.data.bestHeight ?? 0));
     this.add
-      .text(ladderX + 24, 178, 'THE CLIMB', textStyle(11, { color: '#dce8f2', fontStyle: 'bold' }))
+      .text(400, 447, `BEST HEIGHT  ${best.toLocaleString()}`, textStyle(16, {
+        color: '#36566c',
+        fontStyle: 'bold',
+      }))
       .setOrigin(0.5)
-      .setAlpha(0.7);
-    const best = storage.data.bestHeight;
-    for (let i = 0; i < ZONES.length; i++) {
-      const z = ZONES[i];
-      const y = 370 - i * 38;
-      const reached = best >= z.threshold || i === 0;
-      const lg = this.add.graphics();
-      lg.fillStyle(0x000000, 0.25);
-      lg.fillRoundedRect(ladderX + 2, y + 2, 46, 30, 6);
-      lg.fillStyle(reached ? z.skyTop : 0x1a222c, 1);
-      lg.fillRoundedRect(ladderX, y, 46, 30, 6);
-      lg.lineStyle(1.5, 0xffffff, reached ? 0.5 : 0.15);
-      lg.strokeRoundedRect(ladderX, y, 46, 30, 6);
-      this.add
-        .text(ladderX + 23, y + 15, reached ? z.name[0] + z.name.slice(1).toLowerCase() : '?', textStyle(reached ? 8 : 14, {
-          color: '#ffffff',
-          fontStyle: 'bold',
-        }))
-        .setOrigin(0.5)
-        .setAlpha(reached ? 0.9 : 0.4);
-    }
-    if (best > 0) {
-      this.add
-        .text(ladderX + 24, 396, `best ${best}`, textStyle(11, { color: '#ffe9a0' }))
-        .setOrigin(0.5);
-    }
+      .setAlpha(best > 0 ? 0.9 : 0.58);
 
-    // --- palette picker ---
-    this.paletteIdx = Math.max(
-      0,
-      PALETTES.findIndex((p) => p.id === storage.data.settings.palette),
-    );
-    this.previewGfx = this.add.graphics();
-    this.paletteLabel = this.add
-      .text(400, 366, '', textStyle(15, { color: '#ffffff', fontStyle: 'bold' }))
-      .setOrigin(0.5);
-    this.paletteHint = this.add
-      .text(400, 388, '', textStyle(11, { color: '#b9c6d4' }))
-      .setOrigin(0.5);
-    this.drawPalette();
-    this.input.keyboard.on('keydown-LEFT', () => this.cyclePalette(-1));
-    this.input.keyboard.on('keydown-RIGHT', () => this.cyclePalette(1));
-
-    // --- daily toggle ---
-    const today = new Date().toISOString().slice(0, 10);
-    const dailyBest = storage.data.dailyBest[today];
-    this.dailyLabel = this.add
-      .text(400, 300, '', textStyle(15, { color: '#ffe9a0', fontStyle: 'bold' }))
-      .setOrigin(0.5);
-    const setDailyText = () => {
-      this.dailyLabel.setText(
-        this.daily
-          ? `DAILY CLIMB · ${today}${dailyBest ? ` · best ${dailyBest}` : ''}  (D to toggle)`
-          : isTouch
-            ? ''
-            : 'D for the Daily Climb — same storm for everyone',
-      );
-      this.dailyLabel.setAlpha(this.daily ? 1 : 0.55);
+    let starting = false;
+    const start = () => {
+      if (starting) return;
+      starting = true;
+      sfx.init();
+      sfx.uiClick();
+      this.scene.start('Game');
     };
-    setDailyText();
-    this.input.keyboard.on('keydown-D', () => {
-      this.daily = !this.daily;
-      sfx.init();
-      sfx.uiClick();
-      setDailyText();
-    });
 
-    this.add
-      .text(
-        400,
-        432,
-        isTouch
-          ? 'Hold the bottom corners to move, tap the top to jump.\nSwipe sideways to dash, swipe down to spike. Graze blocks to earn sparks.'
-          : 'Arrows/WASD to move & jump  ·  Shift or X to DASH (costs a spark)\nDown+dash in the air to SPIKE DROP  ·  Graze falling blocks to earn sparks & Heat',
-        textStyle(15, { color: '#dce8f2', align: 'center' }),
-      )
-      .setOrigin(0.5)
-      .setAlpha(0.9);
-    this.add
-      .text(400, 476, 'Ride a falling block down… jump the instant it lands.  ·  M to mute', textStyle(12, { color: '#b9c6d4' }))
-      .setOrigin(0.5)
-      .setAlpha(0.7);
-
-    this.input.once('pointerdown', () => {
-      // first user gesture: the browser lets us create the AudioContext here
-      sfx.init();
-      sfx.uiClick();
-      this.scene.start('Game', { daily: this.daily });
-    });
+    playButton.once('pointerdown', start);
+    this.input.keyboard.once('keydown-ENTER', start);
+    this.input.keyboard.once('keydown-SPACE', start);
   }
 
-  cyclePalette(dir) {
-    const n = PALETTES.length;
-    this.paletteIdx = (this.paletteIdx + dir + n) % n;
-    sfx.uiClick();
-    const p = PALETTES[this.paletteIdx];
-    if (isUnlocked(storage, p.id)) storage.setPalette(p.id);
-    this.drawPalette();
-  }
-
-  drawPalette() {
-    const p = PALETTES[this.paletteIdx];
-    const unlocked = isUnlocked(storage, p.id);
-    const gfx = this.previewGfx;
+  update(time) {
+    const gfx = this.vignette;
     gfx.clear();
-    const fake = {
-      x: 385,
-      y: 318,
+
+    // A small playable-looking moment: the character keeps moving and
+    // jumping while blocks settle into uneven, climbable terrain.
+    for (let i = 0; i < 12; i++) {
+      drawBlock(gfx, { x: 40 + i * 60, y: 308, shade: i % 3 });
+    }
+    drawBlock(gfx, { x: 568, y: 268, shade: 1 });
+    drawBlock(gfx, { x: 628, y: 268, shade: 0 });
+    drawBlock(gfx, { x: 628, y: 228, shade: 2 });
+
+    for (const block of FALLING_BLOCKS) {
+      const progress = (time * 0.00034 + block.phase) % 1;
+      const eased = progress * progress;
+      drawBlock(gfx, {
+        x: block.x,
+        y: Phaser.Math.Linear(block.top, block.bottom, eased),
+        shade: block.shade,
+      });
+    }
+
+    const stride = Math.sin(time * 0.00135);
+    const jumpPhase = Math.sin(time * 0.0027);
+    const jump = Math.max(0, jumpPhase);
+    const player = {
+      x: 385 + stride * 48,
+      y: 278 - Math.pow(jump, 0.72) * 52,
       w: 30,
       h: 30,
-      xVel: 0,
-      yVel: 0,
-      offGround: 0,
-      landSquash: 0,
-      shieldTimer: 0,
-      heat: 0,
-      dashTimer: 0,
-      spiking: false,
-      spikeWindup: 0,
+      xVel: Math.cos(time * 0.00135) * 2.5,
+      yVel: -Math.cos(time * 0.0027) * jump * 5,
+      offGround: jump > 0.02 ? 5 : 0,
+      landSquash: jump === 0 && jumpPhase > -0.12 ? 5 : 0,
+      focus: 2,
+      focusTimer: 0,
+      focusDX: 0,
+      focusDY: 0,
     };
-    if (unlocked) {
-      drawPlayer(gfx, fake, 0, { body: p.body, border: p.border, mouth: p.id === 'classic' ? undefined : p.border });
-    } else {
-      drawPlayer(gfx, fake, 0, { body: 0x39434e, border: 0x232a32, ghost: true, alpha: 0.8 });
-      gfx.lineStyle(2, 0xffffff, 0.5);
-      gfx.strokeCircle(400, 333, 6);
-      gfx.fillStyle(0xffffff, 0.5);
-      gfx.fillRect(397, 333, 6, 7);
-    }
-    const active = storage.data.settings.palette === p.id;
-    this.paletteLabel.setText(`◀  ${p.name}${active ? '  ✓' : ''}  ▶`);
-    this.paletteHint.setText(unlocked ? (active ? '' : '') : p.hint ?? '');
+    drawPlayer(gfx, player, Math.floor(time / 16));
   }
 }

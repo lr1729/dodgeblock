@@ -1,5 +1,5 @@
-// Synthesized sound effects via Web Audio — no asset files, SFX only, no
-// music. Everything is deliberately quiet and soft-edged: tones get a short
+// Synthesized sound effects via Web Audio. Everything is deliberately quiet
+// and soft-edged: tones get a short
 // linear attack (no clicky onsets) and exponential decay. Frequent sounds
 // (block landings) are throttled, pitch-randomized, and volume-ducked so
 // late-game block rain never turns into a machine gun.
@@ -109,7 +109,7 @@ class Sfx {
   }
 
   // wooden "tok" — throttled and ducked so block rain stays gentle
-  blockLand() {
+  blockLand(type = 'wood') {
     if (!this.ready) return;
     const now = performance.now();
     if (now - this.lastBlockLand < 50) return;
@@ -117,9 +117,31 @@ class Sfx {
     this.recentLands = this.recentLands.filter((t) => now - t < 400);
     this.recentLands.push(now);
     const vol = 0.1 / (1 + 0.4 * (this.recentLands.length - 1));
-    const f = 170 + Math.random() * 60;
-    this.tone(f, f * 0.75, 0.07, 'triangle', vol);
-    this.noise(0.03, vol * 0.5, 1200);
+    if (type === 'beam') {
+      this.tone(115, 82, 0.13, 'triangle', vol * 1.1);
+      this.noise(0.055, vol * 0.45, 1900);
+    } else if (type === 'gravel') {
+      this.noise(0.065, vol * 0.8, 950);
+      this.tone(210, 130, 0.055, 'square', vol * 0.45);
+    } else {
+      const f = 170 + Math.random() * 60;
+      this.tone(f, f * 0.75, 0.07, 'triangle', vol);
+      this.noise(0.03, vol * 0.5, 1200);
+    }
+  }
+
+  branchFault() {
+    this.tone(105, 72, 0.42, 'triangle', 0.08);
+    this.noise(0.16, 0.035, 420);
+  }
+
+  branchShatter() {
+    this.tone(145, 72, 0.18, 'triangle', 0.13);
+    this.noise(0.13, 0.12, 900);
+  }
+
+  focusTick() {
+    this.tone(760, 680, 0.045, 'sine', 0.055);
   }
 
   // warm two-note chime for shield/speed/jump/boost
@@ -160,6 +182,20 @@ class Sfx {
   dash() {
     this.noise(0.12, 0.1, 2200);
     this.tone(600, 900, 0.12, 'triangle', 0.09);
+  }
+
+  focusEnter() {
+    this.tone(420, 170, 0.22, 'sine', 0.08);
+    this.noise(0.16, 0.045, 520);
+  }
+
+  focusRelease() {
+    this.tone(180, 720, 0.1, 'triangle', 0.08);
+  }
+
+  focusKick() {
+    this.tone(95, 62, 0.14, 'sine', 0.16);
+    this.noise(0.08, 0.1, 760);
   }
 
   dashBonk() {

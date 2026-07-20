@@ -1,20 +1,17 @@
 import Phaser from 'phaser';
-import { COLOR_PLAYER } from '../constants.js';
+import {
+  COLOR_DEAD_SKY_BOTTOM,
+  COLOR_DEAD_SKY_TOP,
+  COLOR_PLAYER,
+} from '../constants.js';
 import { setupCamera, textStyle } from '../utils.js';
-import { drawSkyGradient } from '../render/fx.js';
+import { drawSkyGradient, drawCloud } from '../render/fx.js';
 import { sfx } from '../audio.js';
-import { isMobile } from '../input.js';
-import { ZONES } from '../zones.js';
 import { storage } from '../storage.js';
-import { nextHint } from '../palettes.js';
 
-// deaths become stories
-const FLAVOR = {
-  squished: 'Flattened by a falling block.',
-  fell: 'Lost to the depths below.',
-  monolith: 'Crushed beneath the Monolith.',
-  meteor: 'Obliterated by a meteor.',
-  shockwave: 'Caught flat-footed by the shockwave.',
+const DEATH_CAUSES = {
+  squished: 'Crushed from above',
+  fell: 'Lost below the climb',
 };
 
 export class GameOverScene extends Phaser.Scene {
@@ -23,114 +20,137 @@ export class GameOverScene extends Phaser.Scene {
   }
 
   init(data) {
-    // NOT this.data — that's Phaser's built-in DataManager
-    this.stats = data;
+    this.result = data ?? {};
   }
 
   create() {
-    const s = this.stats;
-    const zone = ZONES[s.zoneIndex ?? 0];
-    // the sky is the zone you died in — instant "how far did I get"
-    setupCamera(this, zone.skyTop);
+    setupCamera(this, COLOR_DEAD_SKY_TOP);
 
     const g = this.add.graphics();
-    drawSkyGradient(g, zone.skyTop, zone.skyBottom);
-    // stats card with a soft shadow
-    g.fillStyle(0x000000, 0.25);
-    g.fillRoundedRect(106, 68, 600, 340, 16);
-    g.fillStyle(0xffffff, 0.94);
-    g.fillRoundedRect(100, 60, 600, 340, 16);
+    drawSkyGradient(g, COLOR_DEAD_SKY_TOP, COLOR_DEAD_SKY_BOTTOM);
+    drawCloud(g, 118, 112, 0.95, 0.13);
+    drawCloud(g, 686, 84, 0.78, 0.12);
+
+    const runHeight = Number(this.result.height);
+    const height = Number.isFinite(runHeight) ? Math.max(0, Math.round(runHeight)) : 0;
+    const newBest = this.result.best === true;
+    const reportedBest = typeof this.result.best === 'number'
+      ? this.result.best
+      : storage.data.bestHeight;
+    const numericBest = Number(reportedBest);
+    const storedBest = Number.isFinite(numericBest) ? Math.round(numericBest) : 0;
+    const best = this.result.assisted ? storedBest : Math.max(height, storedBest);
 
     this.add
-      .text(400, 100, s.daily ? 'Daily Climb Over' : 'Game Over', textStyle(38, { color: '#223447', fontStyle: 'bold' }))
-      .setOrigin(0.5);
+      .text(400, 74, 'GAME OVER', textStyle(30, {
+        color: '#edf3f5',
+        fontStyle: 'bold',
+      }))
+      .setOrigin(0.5)
+      .setAlpha(0.88);
+
     this.add
-      .text(400, 152, 'Score: ' + s.score, textStyle(34, {
+      .text(400, 132, 'HEIGHT', textStyle(14, {
+        color: '#d5dfe4',
+        fontStyle: 'bold',
+      }))
+      .setOrigin(0.5)
+      .setAlpha(0.72);
+
+    this.add
+      .text(400, 202, height.toLocaleString(), textStyle(76, {
         color: Phaser.Display.Color.IntegerToColor(COLOR_PLAYER).rgba,
         fontStyle: 'bold',
+        stroke: '#f4f6f7',
+        strokeThickness: 6,
       }))
       .setOrigin(0.5);
 
-    const badges = [];
-    if (s.bests?.newBestScore) badges.push('NEW BEST SCORE!');
-    if (s.bests?.newDailyBest) badges.push('DAILY BEST!');
-    else if (s.bests?.newBestHeight) badges.push('NEW HEIGHTS!');
-    if (badges.length) {
-      const b = this.add
-        .text(400, 184, badges.join('   '), textStyle(17, { color: '#b8860b', fontStyle: 'bold' }))
-        .setOrigin(0.5);
-      this.tweens.add({ targets: b, alpha: 0.4, duration: 500, yoyo: true, repeat: -1 });
-    }
-
-    g.lineStyle(2, 0x223447, 0.15);
-    g.lineBetween(140, 200, 660, 200);
-
-    const stat = (x, y, label, value, w = 250) => {
-      this.add.text(x, y, label, textStyle(18, { color: '#5a6c80' })).setOrigin(0, 0.5);
-      this.add
-        .text(x + w, y, String(value), textStyle(18, { color: '#223447', fontStyle: 'bold' }))
-        .setOrigin(1, 0.5);
-    };
-    stat(145, 226, 'Altitude income', s.altitudePts ?? 0);
-    stat(145, 258, 'Coins', s.scoreCoins);
-    stat(145, 290, 'Bonuses & feats', s.scoreBonus ?? 0);
-    stat(145, 322, 'Blocks survived', s.blocksLen);
-    stat(430, 226, 'Zone reached', zone.name, 225);
-    stat(430, 258, 'Peak Heat', `${s.peakHeat ?? 0} / 8`, 225);
-    stat(430, 290, 'Best score', storage.data.bestScore, 225);
-    stat(430, 322, 'Best height', storage.data.bestHeight, 225);
-
     this.add
-      .text(400, 356, FLAVOR[s.deathCause] ?? 'The storm won this time.', textStyle(16, {
-        color: '#5a6c80',
-        fontStyle: 'italic',
-      }))
-      .setOrigin(0.5);
-
-    const hint = nextHint(storage);
-    if (hint) {
-      this.add
-        .text(400, 384, hint, textStyle(14, { color: '#8a6d1a' }))
-        .setOrigin(0.5);
-    }
-
-    this.add
-      .text(695, 392, `seed ${s.seed}`, textStyle(10, { color: '#9fb2c2' }))
-      .setOrigin(1, 0.5);
-
-    const isTouch = isMobile(this);
-    const again = this.add
-      .text(400, 445, isTouch ? 'Tap to play again' : 'Click or press R to play again  ·  Esc for menu', textStyle(24, {
-        color: '#ffffff',
+      .text(400, 258, `${newBest ? 'NEW BEST' : 'BEST'}  ${best.toLocaleString()}`, textStyle(17, {
+        color: '#edf3f5',
         fontStyle: 'bold',
-        stroke: '#22303f',
-        strokeThickness: 5,
       }))
-      .setOrigin(0.5);
-    this.tweens.add({
-      targets: again,
-      alpha: 0.4,
-      duration: 700,
-      yoyo: true,
-      repeat: -1,
-      ease: 'Sine.easeInOut',
-    });
+      .setOrigin(0.5)
+      .setAlpha(0.78);
 
-    // restart skips the menu, same as the original
-    const restart = () => {
+    const cause = DEATH_CAUSES[this.result.deathCause];
+    if (cause) {
+      this.add
+        .text(400, 296, cause, textStyle(15, { color: '#d5dfe4' }))
+        .setOrigin(0.5)
+        .setAlpha(0.66);
+    }
+
+    if (this.result.assisted) {
+      this.add
+        .text(400, 326, 'CHECKPOINT RUN', textStyle(11, {
+          color: '#d5dfe4',
+          fontStyle: 'bold',
+        }))
+        .setOrigin(0.5)
+        .setAlpha(0.52);
+    }
+
+    const checkpoint = this.result.checkpoint
+      ? this.command(250, 374, 'CHECKPOINT', true)
+      : null;
+    const replay = this.command(checkpoint ? 410 : 330, 374, 'REPLAY', !checkpoint);
+    const menu = this.command(checkpoint ? 550 : 470, 374, 'MENU', false);
+
+    const seed = this.result.seed;
+    if (seed !== undefined && seed !== null && seed !== '') {
+      this.add
+        .text(400, 447, `seed ${seed}`, textStyle(10, { color: '#d5dfe4' }))
+        .setOrigin(0.5)
+        .setAlpha(0.38);
+    }
+
+    let leaving = false;
+    const go = (scene, data) => {
+      if (leaving) return;
+      leaving = true;
       sfx.init();
       sfx.uiClick();
-      this.scene.start('Game', { daily: this.stats.daily });
+      this.scene.start(scene, data);
     };
-    // small delay before arming restart, so frantic tapping at the moment of
-    // death doesn't skip the stats card instantly
-    this.time.delayedCall(400, () => {
-      this.input.once('pointerdown', restart);
-      this.input.keyboard.once('keydown-R', restart);
-      this.input.keyboard.once('keydown-ESC', () => {
-        sfx.uiClick();
-        this.scene.start('Menu');
-      });
+    const restart = () => go('Game', { seed });
+    const resume = () => go('Game', {
+      seed,
+      checkpoint: this.result.checkpoint,
+      assisted: true,
     });
+    const toMenu = () => go('Menu');
+
+    // Ignore the input that may still be held when the death transition lands.
+    this.time.delayedCall(350, () => {
+      replay.setInteractive({ useHandCursor: true });
+      menu.setInteractive({ useHandCursor: true });
+      checkpoint?.setInteractive({ useHandCursor: true });
+      checkpoint?.once('pointerdown', resume);
+      replay.once('pointerdown', restart);
+      menu.once('pointerdown', toMenu);
+      this.input.keyboard.once('keydown-R', restart);
+      this.input.keyboard.once('keydown-C', checkpoint ? resume : restart);
+      this.input.keyboard.once('keydown-ENTER', checkpoint ? resume : restart);
+      this.input.keyboard.once('keydown-SPACE', checkpoint ? resume : restart);
+      this.input.keyboard.once('keydown-ESC', toMenu);
+      this.input.keyboard.once('keydown-M', toMenu);
+    });
+  }
+
+  command(x, y, label, primary) {
+    const command = this.add
+      .text(x, y, label, textStyle(20, {
+        color: primary ? '#ffffff' : '#e1e8eb',
+        backgroundColor: primary ? '#e8433f' : '#46535d',
+        fontStyle: 'bold',
+        padding: { x: 22, y: 12 },
+      }))
+      .setOrigin(0.5);
+
+    command.on('pointerover', () => command.setAlpha(0.82));
+    command.on('pointerout', () => command.setAlpha(1));
+    return command;
   }
 }

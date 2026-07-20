@@ -31,7 +31,7 @@ export class ParticleFx {
     }
   }
 
-  // radial sparkle ring, e.g. collecting a powerup
+  // Radial sparkle ring for Focus recharge and other positive feedback.
   burst(x, y, color, n = 10) {
     if (this.parts.length > MAX_PARTICLES) return;
     for (let i = 0; i < n; i++) {
@@ -52,7 +52,7 @@ export class ParticleFx {
     }
   }
 
-  // rotating block-shard quads with gravity — spike shatters, meteor craters
+  // Rotating block-shard quads with gravity for Focus breaks.
   shards(x, y, color, n = 12) {
     if (this.parts.length > MAX_PARTICLES) return;
     for (let i = 0; i < n; i++) {

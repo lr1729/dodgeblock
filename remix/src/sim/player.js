@@ -1,17 +1,30 @@
 import {
+  COYOTE_FRAMES,
   GRAVITY,
   JUMP_VEL,
-  JUMP_VEL_BOOSTED,
-  X_DAMPING,
-  HMOV,
+  MOVE_ACCEL_AIR,
+  MOVE_ACCEL_GROUND,
+  MOVE_FRICTION,
+  MOVE_SPEED,
+  FOCUS_CAP,
+  FOCUS_RECHARGE_LAYERS,
+  PLAYER_FALL_CAP,
+  PLAYER_MAX_X,
+  PLAYER_MIN_X,
   PLAYER_SIZE,
   PLAYER_START_X,
   PLAYER_START_Y,
-  PLAYER_MIN_X,
-  PLAYER_MAX_X,
-  SPARK_CAP,
+  WALL_JUMP_X,
+  WALL_JUMP_Y,
+  WALL_COYOTE_FRAMES,
 } from '../constants.js';
 import { constrain } from './util.js';
+
+function approach(value, target, amount) {
+  if (value < target) return Math.min(value + amount, target);
+  if (value > target) return Math.max(value - amount, target);
+  return value;
+}
 
 export class Player {
   constructor() {
@@ -21,72 +34,107 @@ export class Player {
     this.h = PLAYER_SIZE;
     this.xVel = 0;
     this.yVel = 0;
-    this.facing = 1; // last walked direction; default dash direction
-    this.hMov = HMOV;
-    this.shieldTimer = 0;
-    this.hTimer = -999990;
-    this.vTimer = -99990;
-    this.dTimer = -99990;
-    // coyote-time / double-jump state (globals in the original)
+    this.facing = 1;
+
     this.offGround = 10;
-    this.timeSinceJump = 0;
-    this.jumps = 0;
-    // x before the last updateX(), used to undo walking into a block
+    this.timeSinceJump = 10;
     this.originalPos = this.x;
-    // cosmetic only: landing squash countdown (decremented in the sim so
-    // hitstop freezes it along with everything else)
     this.landSquash = 0;
+    this.supportBlock = null;
+    this.wallSide = 0;
+    this.wallCoyoteFrames = 0;
+    this.wallCoyoteSide = 0;
+    this.lastWallJumpSide = 0;
 
-    // --- remix: Spark/Heat economy + verb state ---
-    this.sparks = 1; // dash/spike ammo; earned by grazing
-    this.sparkCap = SPARK_CAP;
-    this.heat = 0; // flow meter, 0..HEAT_MAX
-    this.heatIdle = 0; // frames since the last Heat gain
-    this.jumpVelBase = JUMP_VEL; // raised at Heat tier 2
-    this.dashTimer = 0; // frames of dash remaining
-    this.dashDir = 1;
-    this.dashCooldown = 0;
-    this.dashRecovery = 0; // squish i-frames after a dash/spike ends
-    this.dashPhaseCount = 0; // lethal blocks phased this dash (max 2 pay)
-    this.spiking = false;
-    this.spikeWindup = 0;
-    this.spikeShattered = false;
+    this.focus = FOCUS_CAP;
+    this.focusAimTimer = 0;
+    this.focusAimRemaining = 0;
+    this.focusTimer = 0;
+    this.focusDX = 0;
+    this.focusDY = 0;
+    this.stableFrames = 0;
+    this.highestStableLayer = 0;
+    this.focusProgress = 0;
+    this.nextFocusLayer = FOCUS_RECHARGE_LAYERS;
   }
 
-  // jKeyLetGo === 1 means the jump key was pressed this very step
-  // (edge detection — double jumps require a fresh key press)
-  jump(jKeyLetGo) {
-    if (
-      (this.offGround < 3 && this.timeSinceJump > 2) ||
-      (this.dTimer > 0 && this.jumps < 2 && jKeyLetGo === 1)
-    ) {
-      this.yVel = this.vTimer > 0 ? JUMP_VEL_BOOSTED : this.jumpVelBase;
-      this.timeSinceJump = 0;
-      this.jumps++;
-    }
-  }
-
-  walk(dir) {
-    this.xVel += dir;
-    this.facing = dir > 0 ? 1 : -1;
-  }
-
-  updateX() {
-    this.originalPos = this.x;
-    this.xVel *= X_DAMPING;
-    this.x += this.xVel;
-    this.x = constrain(this.x, PLAYER_MIN_X, PLAYER_MAX_X - this.w);
-  }
-
-  updateY(upHeld) {
-    // variable-height jump: full gravity while rising slowly or holding jump,
-    // double gravity otherwise (classic/script.js:167)
-    if (this.yVel < 4 || upHeld) {
-      this.yVel -= GRAVITY;
+  move(axis, timeScale = 1) {
+    if (axis !== 0) {
+      const accel = this.offGround <= COYOTE_FRAMES ? MOVE_ACCEL_GROUND : MOVE_ACCEL_AIR;
+      this.xVel = approach(this.xVel, axis * MOVE_SPEED, accel * timeScale);
+      this.facing = axis;
     } else {
-      this.yVel -= GRAVITY * 2;
+      this.xVel *= Math.pow(MOVE_FRICTION, timeScale);
+      if (Math.abs(this.xVel) < 0.05) this.xVel = 0;
     }
-    // positive yVel is upward in the original, so y decreases
-    this.y -= this.yVel;
+  }
+
+  jump() {
+    if (this.timeSinceJump <= 2) return false;
+    const grounded = this.offGround <= COYOTE_FRAMES;
+    const rememberedWall = this.wallSide || this.wallCoyoteSide;
+    const canWallJump =
+      !grounded &&
+      rememberedWall !== 0 &&
+      rememberedWall !== this.lastWallJumpSide;
+    if (!grounded && !canWallJump) return false;
+
+    if (canWallJump) {
+      this.yVel = WALL_JUMP_Y;
+      this.xVel = -rememberedWall * WALL_JUMP_X;
+      this.lastWallJumpSide = rememberedWall;
+      this.wallCoyoteFrames = 0;
+      this.wallCoyoteSide = 0;
+    } else {
+      this.yVel = JUMP_VEL;
+      this.lastWallJumpSide = 0;
+    }
+    this.timeSinceJump = 0;
+    this.offGround = COYOTE_FRAMES + 1;
+    this.supportBlock = null;
+    this.wallSide = 0;
+    return true;
+  }
+
+  rememberWall(side) {
+    this.wallSide = side;
+    this.wallCoyoteSide = side;
+    this.wallCoyoteFrames = WALL_COYOTE_FRAMES;
+  }
+
+  updateWallCoyote(timeScale = 1) {
+    if (this.wallSide !== 0) return;
+    this.wallCoyoteFrames = Math.max(0, this.wallCoyoteFrames - timeScale);
+    if (this.wallCoyoteFrames <= 0) this.wallCoyoteSide = 0;
+  }
+
+  clearWallCoyote() {
+    this.wallSide = 0;
+    this.wallCoyoteFrames = 0;
+    this.wallCoyoteSide = 0;
+  }
+
+  updateX(timeScale = 1) {
+    this.originalPos = this.x;
+    this.x += this.xVel * timeScale;
+    this.clampX();
+  }
+
+  clampX() {
+    const bounded = constrain(this.x, PLAYER_MIN_X, PLAYER_MAX_X - this.w);
+    if (bounded !== this.x) {
+      this.wallSide = this.x < PLAYER_MIN_X ? -1 : 1;
+      this.xVel = 0;
+    }
+    this.x = bounded;
+  }
+
+  updateY(upHeld, downHeld, timeScale = 1) {
+    const rising = this.yVel > 0;
+    const gravityMul = rising && !upHeld ? 1.75 : 1;
+    this.yVel -= GRAVITY * gravityMul * timeScale;
+    if (downHeld && this.yVel < 0) this.yVel -= GRAVITY * 0.65 * timeScale;
+    this.yVel = Math.max(this.yVel, -PLAYER_FALL_CAP);
+    this.y -= this.yVel * timeScale;
   }
 }
