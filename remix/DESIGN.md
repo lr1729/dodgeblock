@@ -165,7 +165,7 @@ new layers required for the next charge; there is no reserve.
 The rising camera makes waiting on solved low terrain a losing strategy. Its
 pressure follows the storm rate, keeping climbing and survival coupled.
 
-When enabled, an exact in-memory checkpoint is armed every 1,200 stable height.
+When enabled, an exact in-memory checkpoint is armed every 100 stable height.
 It can only be captured from safe footing outside Aim or a dash. Continuing is
 explicitly assisted and cannot update either one-life best.
 

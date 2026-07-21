@@ -73,7 +73,7 @@ export const FOCUS_EXIT_SPEED = 3.8;
 export const FOCUS_CAP = 3;
 export const FOCUS_RECHARGE_LAYERS = 3;
 
-export const CHECKPOINT_HEIGHT = 1200;
+export const CHECKPOINT_HEIGHT = 100;
 
 // Camera pressure makes height and survival the same objective.
 export const CAMERA_ANCHOR_Y = 160;

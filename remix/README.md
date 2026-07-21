@@ -62,7 +62,7 @@ keeps the last direction selected.
   markers become brighter and deeper as their estimated arrival approaches.
 - Difficulty comes from rising density, camera pressure, and correlated storm
   phases rather than unbounded gravity or unreadable physics.
-- Every 1,200 height arms an in-memory checkpoint when the run rule is enabled.
+- Every 100 height arms an in-memory checkpoint when the run rule is enabled.
   Continuing from the death
   screen restores the exact simulation state and marks the run as assisted, so
   it cannot replace the one-life best. Auto Guard and Hardcore keep separate
