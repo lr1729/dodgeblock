@@ -556,7 +556,7 @@ test('a later crush consumes another charge despite visual recovery', () => {
   sim.step(N);
 
   assert.equal(sim.dead, false);
-  assert.equal(p.focus, 0);
+  assert.equal(p.focus, FOCUS_CAP - 2);
 });
 
 test('Focus bonks on the ground', () => {

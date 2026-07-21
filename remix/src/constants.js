@@ -70,7 +70,7 @@ export const FOCUS_FRAMES = 8;
 export const FOCUS_SPEED = 10;
 export const FOCUS_DASH_WORLD_SCALE = 0.55;
 export const FOCUS_EXIT_SPEED = 3.8;
-export const FOCUS_CAP = 2;
+export const FOCUS_CAP = 3;
 export const FOCUS_RECHARGE_LAYERS = 3;
 
 export const CHECKPOINT_HEIGHT = 1200;

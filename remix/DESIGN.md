@@ -90,7 +90,7 @@ upward corner correction.
 
 ## Focus
 
-The player starts with two Focus charges. Activating one spends it immediately
+The player starts with three visible Focus charges. Activating one spends it immediately
 and enters Aim:
 
 - player, storm, blocks, gravity, and camera continue at 10% speed;
@@ -159,7 +159,7 @@ higher route.
 
 One charge is earned for each new three-layer stable threshold. Progress made
 while charges are full is discarded, so keeping protection ready sacrifices
-future recharge progress. The HUD shows two charge diamonds and the remaining
+future recharge progress. The HUD shows three charge diamonds and the remaining
 new layers required for the next charge; there is no reserve.
 
 The rising camera makes waiting on solved low terrain a losing strategy. Its

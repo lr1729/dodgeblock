@@ -6,6 +6,7 @@ import {
   BLOCK_SPAWN_ABOVE,
   BLOCK_W,
   CAMERA_ANCHOR_Y,
+  FOCUS_CAP,
   GROUND,
   PHASES,
   SPAWN_GRID,
@@ -215,7 +216,7 @@ test('Focus Aim slows the storm clock instead of granting a periodic shield', ()
   }
   assert.ok(normal.director.elapsedFrames >= 20);
   assert.ok(focused.director.elapsedFrames < 5);
-  assert.equal(focused.player.focus, 1, 'Focus did not spend a charge on entry');
+  assert.equal(focused.player.focus, FOCUS_CAP - 1, 'Focus did not spend a charge on entry');
   assert.ok(focused.player.focusAimTimer > 0, 'Focus became an instant shield/burst');
 });
 

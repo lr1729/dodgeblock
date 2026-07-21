@@ -40,7 +40,7 @@ keeps the last direction selected.
   difference is visible before contact.
 - **Beams** are 90 px wide blocks. Their broader roofs and support contacts
   change terrain without adding special hidden rules.
-- **Focus** starts with two charges. With Auto Guard enabled, a charge
+- **Focus** starts with three visible charges. With Auto Guard enabled, a charge
   automatically absorbs a lethal overhead crush and removes every block in that
   same impact incident. Hitting a falling block shatters that one
   hazard. Hitting settled terrain from any of the eight directions marks its
