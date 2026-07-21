@@ -101,7 +101,7 @@ export class GameOverScene extends Phaser.Scene {
 
     const checkpoint = this.result.checkpoint
       ? this.command(
-          250,
+          190,
           374,
           `CONTINUE ${Math.max(
             0,
@@ -110,8 +110,8 @@ export class GameOverScene extends Phaser.Scene {
           true,
         )
       : null;
-    const replay = this.command(checkpoint ? 410 : 330, 374, 'REPLAY', !checkpoint);
-    const menu = this.command(checkpoint ? 550 : 470, 374, 'MENU', false);
+    const replay = this.command(checkpoint ? 400 : 330, 374, 'REPLAY', !checkpoint);
+    const menu = this.command(checkpoint ? 610 : 470, 374, 'MENU', false);
 
     const seed = this.result.seed;
     if (seed !== undefined && seed !== null && seed !== '') {

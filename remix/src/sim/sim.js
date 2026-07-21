@@ -30,6 +30,7 @@ import { normalizeRunRules } from '../rules.js';
 import { constrain, rectrectStrict } from './util.js';
 
 const CONTACT_EPSILON = 0.001;
+const CRUSH_OVERLAP_PX = 6;
 
 function overlapsX(a, b) {
   return a.x < b.x + b.w && a.x + a.w > b.x;
@@ -441,14 +442,13 @@ export class Sim {
       const crossedHead = previousBottom <= p.y + CONTACT_EPSILON &&
         currentBottom >= p.y - CONTACT_EPSILON;
       const penetratingFromAbove = rectrectStrict(p, b) &&
-        (b.previousY ?? b.y) < p.y + p.h / 2;
-      const playerCenterX = p.x + p.w / 2;
-      const horizontallyOverhead = playerCenterX > b.x && playerCenterX < b.x + b.w;
+        (b.previousY ?? b.y) < p.y - CONTACT_EPSILON;
+      const horizontalOverlap = Math.min(p.x + p.w, b.x + b.w) - Math.max(p.x, b.x);
       const impactVelocity = b.fixed ? b.impactVel : b.yVel;
       if (
         b.spec.lethal &&
         impactVelocity > SQUISH_VEL &&
-        horizontallyOverhead &&
+        horizontalOverlap >= CRUSH_OVERLAP_PX &&
         (crossedHead || penetratingFromAbove)
       ) {
         const travel = Math.max(CONTACT_EPSILON, currentBottom - previousBottom);

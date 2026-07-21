@@ -464,6 +464,34 @@ test('side contact with falling wood pushes instead of killing', () => {
   assert.ok(p.x < 200, `side contact did not push the player: ${p.x}`);
 });
 
+test('meaningful descending corner overlap crushes instead of pushing sideways', () => {
+  const sim = hardcoreSim(248);
+  const p = sim.player;
+  p.x = 200;
+  p.y = 100;
+  p.offGround = 10;
+  sim.blocks.spawnAt(220, 65, 'wood', { yVel: 4, shade: 0 });
+
+  sim.step(N);
+
+  assert.equal(sim.dead, true);
+  assert.equal(sim.deathCause, 'squished');
+});
+
+test('a shallow descending shoulder graze still pushes instead of killing', () => {
+  const sim = hardcoreSim(249);
+  const p = sim.player;
+  p.x = 200;
+  p.y = 100;
+  p.offGround = 10;
+  sim.blocks.spawnAt(227, 65, 'wood', { yVel: 4, shade: 0 });
+
+  sim.step(N);
+
+  assert.equal(sim.dead, false);
+  assert.ok(p.x < 200, `shoulder graze did not push the player: ${p.x}`);
+});
+
 test('top contact with falling wood remains physically supported', () => {
   const sim = quietSim(242);
   const p = sim.player;

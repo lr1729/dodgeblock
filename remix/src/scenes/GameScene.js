@@ -139,11 +139,11 @@ export class GameScene extends Phaser.Scene {
         strokeThickness: 4,
       }));
     this.focusLabel = this.add
-      .text(671, 25, 'DASH', textStyle(10, {
+      .text(663, 25, 'DASH', textStyle(10, {
         color: '#eaf6f6',
         fontStyle: 'bold',
       }))
-      .setOrigin(0, 0.5)
+      .setOrigin(1, 0.5)
       .setAlpha(0.72);
     this.focusProgressLabel = this.add
       .text(765, 43, 'DASH IN 3 NEW LAYERS', textStyle(9, {
