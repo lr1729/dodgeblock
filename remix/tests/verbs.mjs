@@ -149,6 +149,20 @@ test('touch jump zone produces one buffered jump press', () => {
   assert.equal(input.consumePressed().jumpPressed, false);
 });
 
+test('touch movement zones produce one directional press', () => {
+  const { input, pointerHandlers } = touchInputHarness();
+  pointerHandlers.get('pointerdown')({
+    id: 2,
+    x: 700,
+    y: 400,
+    isDown: true,
+  });
+
+  assert.equal(input.right, true);
+  assert.equal(input.consumePressed().movePressed, 1);
+  assert.equal(input.consumePressed().movePressed, 0);
+});
+
 test('touch swipe preserves an intentional zero direction axis', () => {
   const { input, pointerHandlers } = touchInputHarness();
   const pointer = { id: 2, x: 100, y: 400, isDown: true, downTime: performance.now() - 150 };
@@ -184,6 +198,7 @@ test('reset clears queued and held touch input while paused', () => {
   assert.equal(input.left, false);
   assert.deepEqual(input.consumePressed(), {
     jumpPressed: false,
+    movePressed: 0,
     focusPressed: false,
     focusReleased: false,
     focusDirX: 0,
@@ -675,6 +690,18 @@ test('wall jump launches away once until another wall or landing resets it', () 
   sim.step({ ...N, up: true });
   assert.equal(p.lastWallJumpSide, 0, 'held auto-hop triggered a wall jump');
 
+  p.wallSide = 1;
+  p.timeSinceJump = 10;
+  sim.step({ ...N, up: true, right: true });
+  assert.equal(p.lastWallJumpSide, 0, 'held input into the wall triggered a wall jump');
+
+  p.wallSide = 1;
+  p.timeSinceJump = 10;
+  sim.step({ ...N, up: true, right: true, movePressed: 1 });
+  assert.equal(p.lastWallJumpSide, 1, 'fresh movement toward the wall did not wall jump');
+  assert.ok(p.xVel < 0, `climbing wall jump did not launch left: ${p.xVel}`);
+
+  p.lastWallJumpSide = 0;
   p.wallSide = 1;
   p.timeSinceJump = 10;
   sim.step({ ...N, up: true, left: true });
