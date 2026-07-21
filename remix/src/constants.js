@@ -32,6 +32,7 @@ export const WALL_JUMP_X = 5.4;
 export const WALL_JUMP_Y = 8.1;
 export const WALL_COYOTE_FRAMES = 4;
 export const CORNER_CORRECTION_PX = 4;
+export const DOWNWARD_CORRECTION_PX = 6;
 
 export const PLAYER_SIZE = 30;
 export const PLAYER_START_X = 385;

@@ -231,6 +231,22 @@ test('cardinal gesture direction is not polluted by held controls', () => {
   assert.equal(sim.player.focusDY, 0);
 });
 
+test('Focus Aim preserves the last nonzero direction after its key is released', () => {
+  const sim = quietSim(211);
+  sim.player.y = 120;
+  sim.step({ ...N, up: true, focusPressed: true, focusHeld: true });
+  assert.equal(sim.player.focusDX, 0);
+  assert.equal(sim.player.focusDY, -1);
+
+  sim.step({ ...N, focusHeld: true });
+  assert.equal(sim.player.focusDX, 0);
+  assert.equal(sim.player.focusDY, -1);
+
+  const y = sim.player.y;
+  sim.step({ ...N, focusReleased: true });
+  assert.ok(sim.player.y < y, 'releasing Aim reverted to horizontal facing');
+});
+
 test('horizontal Focus works while grounded or standing on a block', () => {
   const groundSim = quietSim(22);
   groundSim.step(N);
@@ -303,6 +319,40 @@ test('Focus shatters exactly one falling block and stops', () => {
   assert.equal(sim.blocks.blocks.includes(second), true, 'Focus affected a second block');
   assert.equal(sim.player.focusTimer, 0);
   assert.equal(log.filter((entry) => entry.name === 'focusKick').length, 1);
+});
+
+test('Focus selects the earliest geometric hit instead of the first array entry', () => {
+  const sim = quietSim(41);
+  const far = sim.blocks.spawnAt(142, 100, 'wood', { yVel: 0, shade: 0 });
+  const near = sim.blocks.spawnAt(138, 100, 'wood', { yVel: 0, shade: 1 });
+  const p = sim.player;
+  p.x = 100;
+  p.y = 100;
+  p.focusDX = 1;
+  p.focusDY = 0;
+  p.focusTimer = FOCUS_FRAMES;
+
+  sim.updateFocus();
+  sim.updateFocus();
+
+  assert.equal(sim.blocks.blocks.includes(near), false, 'nearer block survived');
+  assert.equal(sim.blocks.blocks.includes(far), true, 'farther array-first block was selected');
+});
+
+test('Focus does not hit a touching block when moving away from it', () => {
+  const sim = quietSim(42);
+  const block = sim.blocks.spawnAt(100, 100, 'wood', { yVel: 0, shade: 0 });
+  const p = sim.player;
+  p.x = block.x + block.w;
+  p.y = block.y;
+  p.focusDX = 1;
+  p.focusDY = 0;
+  p.focusTimer = FOCUS_FRAMES;
+
+  sim.updateFocus();
+
+  assert.equal(sim.blocks.blocks.includes(block), true);
+  assert.ok(p.x > block.x + block.w, 'Focus failed to move away from the touching block');
 });
 
 test('Focus cuts settled terrain from all eight directions', () => {
@@ -647,6 +697,40 @@ test('a small rising head-corner overlap is corrected without cancelling the jum
 
   assert.ok(p.x < startX, `corner correction did not move left: ${startX} -> ${p.x}`);
   assert.ok(p.yVel > 0, `corner correction cancelled upward velocity: ${p.yVel}`);
+});
+
+test('a small falling ledge overlap follows horizontal intent into an open gap', () => {
+  const sim = quietSim(624);
+  const ledge = fixedBlock(sim, 10, 3, 'wood');
+  const p = sim.player;
+  const fromY = ledge.y - p.h - 8;
+  p.x = ledge.x - p.w + 3;
+  p.y = fromY + 12;
+  p.xVel = -3;
+  p.yVel = -6;
+  p.offGround = 20;
+
+  sim.resolvePlayerY(fromY);
+
+  approx(p.x, ledge.x - p.w);
+  approx(p.y, fromY + 12);
+  assert.ok(p.offGround > 0, 'gap assist incorrectly landed on the ledge');
+});
+
+test('falling ledge correction requires matching horizontal intent', () => {
+  const sim = quietSim(625);
+  const ledge = fixedBlock(sim, 10, 3, 'wood');
+  const p = sim.player;
+  const fromY = ledge.y - p.h - 8;
+  p.x = ledge.x - p.w + 3;
+  p.y = fromY + 12;
+  p.xVel = 0;
+  p.yVel = -6;
+
+  sim.resolvePlayerY(fromY);
+
+  approx(p.y, ledge.y - p.h);
+  assert.equal(p.offGround, 0);
 });
 
 test('breaking gravel warns its whole dependent branch before atomic shatter', () => {

@@ -5,6 +5,7 @@ import {
   CAMERA_RATE_DIVISOR,
   CORNER_CORRECTION_PX,
   COYOTE_FRAMES,
+  DOWNWARD_CORRECTION_PX,
   FOCUS_AIM_WORLD_SCALE,
   FOCUS_AIM_MAX_FRAMES,
   FOCUS_CAP,
@@ -36,6 +37,49 @@ function overlapsX(a, b) {
 
 function overlapsY(a, b) {
   return a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function sweptRectContact(mover, dx, dy, target) {
+  const axis = (start, size, delta, targetStart, targetSize) => {
+    if (delta > 0) {
+      return {
+        entry: (targetStart - (start + size)) / delta,
+        exit: (targetStart + targetSize - start) / delta,
+      };
+    }
+    if (delta < 0) {
+      return {
+        entry: (targetStart + targetSize - start) / delta,
+        exit: (targetStart - (start + size)) / delta,
+      };
+    }
+    if (start >= targetStart + targetSize || start + size <= targetStart) return null;
+    return { entry: -Infinity, exit: Infinity };
+  };
+
+  const x = axis(mover.x, mover.w, dx, target.x, target.w);
+  const y = axis(mover.y, mover.h, dy, target.y, target.h);
+  if (!x || !y) return null;
+  const entry = Math.max(x.entry, y.entry);
+  const exit = Math.min(x.exit, y.exit);
+  if (entry > exit + CONTACT_EPSILON || exit < 0 || entry > 1) return null;
+  if (entry < 0 && !rectrectStrict(mover, target)) return null;
+
+  const time = constrain(entry, 0, 1);
+  const at = {
+    x: mover.x + dx * time,
+    y: mover.y + dy * time,
+    w: mover.w,
+    h: mover.h,
+  };
+  const overlapAtX = Math.max(0, Math.min(at.x + at.w, target.x + target.w) - Math.max(at.x, target.x));
+  const overlapAtY = Math.max(0, Math.min(at.y + at.h, target.y + target.h) - Math.max(at.y, target.y));
+  const coverage = x.entry > y.entry + CONTACT_EPSILON
+    ? overlapAtY
+    : y.entry > x.entry + CONTACT_EPSILON
+      ? overlapAtX
+      : Math.max(overlapAtX, overlapAtY);
+  return { time, coverage };
 }
 
 export const NEUTRAL_INPUT = Object.freeze({
@@ -212,7 +256,12 @@ export class Sim {
         : inp.up
           ? -1
           : 0;
-    if (dx === 0 && dy === 0) dx = p.focusDX || p.facing;
+    if (dx === 0 && dy === 0) {
+      if (p.focusAimTimer > 0 && (p.focusDX !== 0 || p.focusDY !== 0)) {
+        return { dx: p.focusDX, dy: p.focusDY };
+      }
+      dx = p.facing;
+    }
     if (dx !== 0 && dy !== 0) {
       dx *= Math.SQRT1_2;
       dy *= Math.SQRT1_2;
@@ -270,17 +319,9 @@ export class Sim {
     );
     p.y += p.focusDY * FOCUS_SPEED;
 
-    if (p.x !== wantedX) {
-      this.events.emit('focusBonk', { x: p.x + p.w / 2, y: p.y + p.h / 2 });
-      this.endFocus('bonk');
-      return;
-    }
-
-    const blocks = this.blocks.blocks;
-    for (let i = 0; i < blocks.length; i++) {
-      const b = blocks[i];
-      if (!rectrectStrict(p, b)) continue;
-
+    const collision = this.firstFocusBlockCollision(oldX, oldY, p.x - oldX, p.y - oldY);
+    if (collision) {
+      const b = collision.block;
       if (!b.fixed) {
         this.blocks.remove(b);
         p.x = oldX;
@@ -310,6 +351,12 @@ export class Sim {
       return;
     }
 
+    if (p.x !== wantedX) {
+      this.events.emit('focusBonk', { x: p.x + p.w / 2, y: p.y + p.h / 2 });
+      this.endFocus('bonk');
+      return;
+    }
+
     if (rectrectStrict(p, GROUND)) {
       p.x = oldX;
       p.y = Math.min(oldY, GROUND.y - p.h);
@@ -322,21 +369,47 @@ export class Sim {
     if (p.focusTimer <= 0) this.endFocus('end');
   }
 
+  firstFocusBlockCollision(x, y, dx, dy) {
+    const mover = { x, y, w: this.player.w, h: this.player.h };
+    const hits = [];
+    for (const block of this.blocks.blocks) {
+      const contact = sweptRectContact(mover, dx, dy, block);
+      if (contact) hits.push({ block, ...contact });
+    }
+    hits.sort((a, b) =>
+      a.time - b.time ||
+      b.coverage - a.coverage ||
+      a.block.id - b.block.id
+    );
+    return hits[0] ?? null;
+  }
+
   focusPathCollision() {
     const p = this.player;
     const probe = { x: p.x, y: p.y, w: p.w, h: p.h };
 
     for (let step = 0; step < FOCUS_FRAMES; step++) {
+      const oldX = probe.x;
+      const oldY = probe.y;
       const wantedX = probe.x + p.focusDX * FOCUS_SPEED;
       probe.x = constrain(wantedX, PLAYER_MIN_X, PLAYER_MAX_X - probe.w);
       probe.y += p.focusDY * FOCUS_SPEED;
-      const distance = (step + 1) * FOCUS_SPEED;
-      if (probe.x !== wantedX) return { kind: 'bonk', reason: 'rail', distance };
-
-      for (const block of this.blocks.blocks) {
-        if (!rectrectStrict(probe, block)) continue;
-        return { kind: block.fixed ? 'fixed' : 'falling', block, distance };
+      const stepDistance = Math.hypot(probe.x - oldX, probe.y - oldY);
+      const distance = step * FOCUS_SPEED + stepDistance;
+      const collision = this.firstFocusBlockCollision(
+        oldX,
+        oldY,
+        probe.x - oldX,
+        probe.y - oldY,
+      );
+      if (collision) {
+        return {
+          kind: collision.block.fixed ? 'fixed' : 'falling',
+          block: collision.block,
+          distance: step * FOCUS_SPEED + collision.time * stepDistance,
+        };
       }
+      if (probe.x !== wantedX) return { kind: 'bonk', reason: 'rail', distance };
       if (rectrectStrict(probe, GROUND)) {
         return { kind: 'bonk', reason: 'ground', distance };
       }
@@ -557,6 +630,11 @@ export class Sim {
       return;
     }
 
+    if (!corrected && hit.block?.fixed && this.tryDownwardCornerCorrection(hit.block)) {
+      this.resolvePlayerY(fromY, true);
+      return;
+    }
+
     p.y = hit.face;
     p.yVel = hit.block?.fixed === false ? -hit.block.yVel : 0;
     p.offGround = 0;
@@ -610,6 +688,23 @@ export class Sim {
       return true;
     }
     return false;
+  }
+
+  tryDownwardCornerCorrection(block) {
+    const p = this.player;
+    const direction = Math.sign(p.xVel);
+    if (direction === 0) return false;
+    const x = direction < 0 ? block.x - p.w : block.x + block.w;
+    if (Math.abs(x - p.x) > DOWNWARD_CORRECTION_PX + CONTACT_EPSILON) return false;
+    if (x < PLAYER_MIN_X || x > PLAYER_MAX_X - p.w) return false;
+
+    const probe = { x, y: p.y, w: p.w, h: p.h };
+    const obstructed = this.blocks.blocks.some(
+      (other) => other !== block && other.fixed && rectrectStrict(probe, other),
+    );
+    if (obstructed || rectrectStrict(probe, GROUND)) return false;
+    p.x = x;
+    return true;
   }
 
   updateFocusRecharge(timeScale = 1) {

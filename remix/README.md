@@ -22,7 +22,8 @@ periodic shield, or secondary reward economy.
 
 Focus slows the whole simulation to 10% speed for at most 1.5 real seconds.
 The player continues moving and can adjust the eight-way aim direction. Release
-early, or let the timer expire, to commit the dash.
+early, or let the timer expire, to commit the dash. Releasing a direction key
+keeps the last direction selected.
 
 ## Core Mechanics
 
@@ -49,14 +50,16 @@ early, or let the timer expire, to commit the dash.
   atomically. Debris is cosmetic and cannot collide, kill, or reseat.
 - Wall jumps recover from pockets and pile edges without requiring a random
   double-jump pickup. Wall contact includes four-frame jump grace, and small
-  upward head-corner catches are corrected without cancelling the jump.
+  upward head-corner catches are corrected without cancelling the jump. A
+  six-pixel downward correction favors deliberate movement into narrow gaps.
 - The HUD states how many new stable layers remain before the next dash. Focus
   recharges on the landing frame after progress through each three-layer
   threshold. Progress made while charges are full is discarded, and progress
   cannot advance during Aim.
 - The storm commits position, width, and material 18 frames before the drop.
   A cheap local safety heuristic rejects only obvious synchronized crushes;
-  most terrain remains random and strategically imperfect.
+  most terrain remains random and strategically imperfect. Stacked warning
+  markers become brighter and deeper as their estimated arrival approaches.
 - Difficulty comes from rising density, camera pressure, and correlated storm
   phases rather than unbounded gravity or unreadable physics.
 - Every 1,200 height arms an in-memory checkpoint when the run rule is enabled.

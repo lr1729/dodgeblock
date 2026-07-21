@@ -73,7 +73,9 @@ ground speed, seven for a full reversal, and three to stop. Held jump repeats on
 valid footing. Jump buffering and coyote time make late input reliable. A wall
 jump can be used once from a given wall until the player lands or reaches the
 opposite wall. Solid contacts resolve to exact faces, so alignment never depends
-on the fractional position of the previous frame.
+on the fractional position of the previous frame. A descending player who clips
+a ledge by at most six pixels is corrected into an open gap only when horizontal
+movement already points there.
 
 A lethal block kills only when its descending lower face reaches the player's
 head above the crush threshold. Side and corner contacts push. Incidental top
@@ -94,6 +96,7 @@ and enters Aim:
 - player, storm, blocks, gravity, and camera continue at 10% speed;
 - steering, jumping, and collision remain active;
 - an eight-way arrow can be adjusted throughout Aim;
+- releasing a steering key preserves the last nonzero Aim direction;
 - Aim lasts at most 90 real simulation ticks, or 1.5 seconds;
 - release or timeout commits the dash;
 - recharge and recharge milestones cannot advance during Aim.
@@ -108,6 +111,11 @@ shape of a block, never whether an otherwise identical cut input works:
 - hitting fixed wood, gravel, or beam from any direction marks its dependent
   branch for structural removal;
 - ground and arena rails stop the dash.
+
+Focus targeting uses swept contact time rather than block storage order. When
+contacts are simultaneous, greater contact coverage wins before stable ID is
+used as a final deterministic tie-breaker. The preview uses the same query as
+the committed dash.
 
 Focus is therefore one scarce answer with several uses: remove an immediate
 hazard, escape a pocket, cross a route, or prune a tower.
@@ -176,6 +184,10 @@ cover the entire locally reachable range.
 The heuristic does not prove long-term safety, optimize lanes, inject recovery
 terrain, model Focus, or repair earlier strategic mistakes. Random terrain and
 unfavorable future choices remain the source of tension.
+
+Warning strips stack when their horizontal spans overlap. Brightness and arrow
+depth represent estimated time to the readable field, so a block reserved far
+above another drop remains visible without looking immediately imminent.
 
 ## Difficulty
 

@@ -129,9 +129,9 @@ export function drawWarningStrip(gfx, b, y, pulse, color = COLOR_WARNING) {
   const cx = x + b.w / 2;
   const h = 9;
   const art = BLOCK_ART[b.type] ?? BLOCK_ART.wood;
-  gfx.fillStyle(art.fills[0], 0.78);
+  gfx.fillStyle(art.fills[0], 0.45 + 0.4 * pulse);
   gfx.fillRect(x, y, b.w, h);
-  gfx.lineStyle(2, color, 0.55 + 0.35 * pulse);
+  gfx.lineStyle(2, color, 0.35 + 0.6 * pulse);
   gfx.strokeRect(x, y, b.w, h);
   if (b.type === 'beam') {
     gfx.fillStyle(0xd7e0e7, 0.9);
@@ -146,5 +146,5 @@ export function drawWarningStrip(gfx, b, y, pulse, color = COLOR_WARNING) {
     gfx.lineBetween(x + 9, y + h / 2, x + b.w - 9, y + h / 2);
   }
   gfx.fillStyle(color, 0.25 + 0.65 * pulse);
-  gfx.fillTriangle(cx - 7, y + h, cx + 7, y + h, cx, y + h + 6);
+  gfx.fillTriangle(cx - 7, y + h, cx + 7, y + h, cx, y + h + 3 + 5 * pulse);
 }

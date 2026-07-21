@@ -38,7 +38,7 @@ import {
   drawWarningStrip,
   frameNameFor,
 } from '../render/blockArt.js';
-import { stackWarnings } from '../render/warningLayout.js';
+import { stackWarnings, warningUrgency } from '../render/warningLayout.js';
 import { ParticleFx } from '../render/fx.js';
 import { Juice } from '../render/juice.js';
 import { drawPlayer } from '../render/playerArt.js';
@@ -381,12 +381,20 @@ export class GameScene extends Phaser.Scene {
     warnings.clear();
     const warningEntries = [];
     for (const forecast of sim.director.forecasts) {
+      const signal = warningUrgency(
+        { ...forecast, yVel: 0 },
+        forecast.y + camY,
+        WARNING_CLEAR_Y,
+      );
       warningEntries.push({
         source: forecast,
         x: forecast.x,
         w: forecast.w,
-        eta: 100000 + forecast.frames,
-        progress: 1 - forecast.frames / TELEGRAPH_FRAMES,
+        eta: forecast.frames + signal.eta,
+        progress: Math.max(
+          1 - forecast.frames / TELEGRAPH_FRAMES,
+          signal.progress * 0.75,
+        ),
         color: WARNING_COLOR[forecast.type],
       });
     }
@@ -447,12 +455,13 @@ export class GameScene extends Phaser.Scene {
       const screenY = b.y + camY;
       if (screenY > GAME_H + 80) continue;
       if (screenY < WARNING_CLEAR_Y) {
+        const signal = warningUrgency(b, screenY, WARNING_CLEAR_Y, pulse);
         warningEntries.push({
           source: b,
           x: b.x,
           w: b.w,
-          eta: -100000 - screenY,
-          progress: pulse,
+          eta: signal.eta,
+          progress: signal.progress,
           color: WARNING_COLOR[b.type],
         });
       }

@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { stackWarnings } from '../src/render/warningLayout.js';
+import {
+  estimateFallFrames,
+  stackWarnings,
+  warningUrgency,
+} from '../src/render/warningLayout.js';
 
 const item = (x, w, eta) => ({ x, w, eta });
 
@@ -30,4 +34,11 @@ assert.equal(deep.length, 12);
 assert.ok(Math.max(...deep.map((warning) => warning.y)) <= 51);
 assert.equal(new Set(deep.map((warning) => warning.y)).size, 12);
 
-console.log('ok warning layout preserves and orders overlapping arrivals');
+assert.ok(estimateFallFrames(600, 0, 0.3, 13) > estimateFallFrames(120, 0, 0.3, 13));
+const source = { yVel: 2, spec: { gravity: 0.3, maxFallSpeed: 13 } };
+const farSignal = warningUrgency(source, -500, 54, 0.5);
+const nearSignal = warningUrgency(source, -20, 54, 0.5);
+assert.ok(farSignal.eta > nearSignal.eta);
+assert.ok(farSignal.progress < nearSignal.progress);
+
+console.log('ok warning layout preserves order and communicates arrival urgency');
