@@ -1,0 +1,16 @@
+[Unit]
+Description=Dodgeblock PPO training
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/lr/dodgeblock-rl/game
+ExecStart=/home/lr/dodgeblock-rl/game/rl/run-training.sh
+Restart=on-failure
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+Environment=OMP_NUM_THREADS=12
+Environment=MKL_NUM_THREADS=12
+
+[Install]
+WantedBy=default.target
