@@ -84,6 +84,13 @@ export function createInput(scene) {
       pressed.focusDirX = pressed.focusDirY = 0;
       return out;
     },
+    reset() {
+      pressed.jump = pressed.focus = pressed.focusReleased = false;
+      pressed.focusDirX = pressed.focusDirY = 0;
+      focusKeys.clear();
+      touch?.reset();
+      scene.input.keyboard.resetKeys?.();
+    },
   };
 }
 
@@ -135,6 +142,9 @@ function createTouch(scene, pressed) {
         if (e.swiped && e.pointer.isDown) return true;
       }
       return false;
+    },
+    reset() {
+      active.clear();
     },
   };
 

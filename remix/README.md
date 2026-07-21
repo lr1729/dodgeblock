@@ -18,12 +18,16 @@ periodic shield, or secondary reward economy.
 | Fast fall | `S` or Down | - |
 | Focus Aim | Hold `Shift`, `X`, or `K` | Swipe and keep holding |
 | Commit Focus | Release the Focus key | Release the swipe |
+| Pause / resume | `Esc` | Resume with the play button |
 | Mute | `M` | - |
 
 Focus slows the whole simulation to 10% speed for at most 1.5 real seconds.
 The player continues moving and can adjust the eight-way aim direction. Release
 early, or let the timer expire, to commit the dash. Releasing a direction key
 keeps the last direction selected.
+
+The game also pauses when its tab is hidden or its window loses focus. Returning
+leaves it paused until explicitly resumed, so backgrounding cannot cost a run.
 
 ## Core Mechanics
 

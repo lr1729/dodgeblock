@@ -17,6 +17,7 @@ class Music {
     this.step = 0;
     this.nextNoteTime = 0;
     this.scheduledNotes = 0;
+    this.paused = false;
   }
 
   attach(sfx) {
@@ -44,6 +45,12 @@ class Music {
     this.intensity = Math.max(0, Math.min(2, value));
   }
 
+  setPaused(paused) {
+    this.paused = paused;
+    const ctx = this.sfx?.ctx;
+    if (!paused && ctx) this.nextNoteTime = ctx.currentTime + 0.05;
+  }
+
   setFocus(active) {
     if (!this.filter || !this.sfx?.ctx) return;
     const t = this.sfx.ctx.currentTime;
@@ -68,7 +75,7 @@ class Music {
 
   schedule() {
     const ctx = this.sfx?.ctx;
-    if (!ctx || ctx.state !== 'running') return;
+    if (!ctx || ctx.state !== 'running' || this.paused) return;
     while (this.nextNoteTime < ctx.currentTime + 0.12) {
       if (this.intensity > 0 && !this.sfx.muted) this.playStep(this.step, this.nextNoteTime);
       this.step = (this.step + 1) % STEPS;

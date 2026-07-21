@@ -13,6 +13,7 @@ class Sfx {
     this.master = null;
     this.noiseBuf = null;
     this.plays = 0; // debug/testing counter
+    this.paused = false;
     this.muted =
       typeof localStorage !== 'undefined' && localStorage.getItem(MUTE_KEY) === '1';
     this.lastBlockLand = 0;
@@ -42,7 +43,7 @@ class Sfx {
 
   toggleMute() {
     this.muted = !this.muted;
-    if (this.master) this.master.gain.value = this.muted ? 0 : MASTER_VOL;
+    if (this.master) this.master.gain.value = this.muted || this.paused ? 0 : MASTER_VOL;
     try {
       localStorage.setItem(MUTE_KEY, this.muted ? '1' : '0');
     } catch {
@@ -51,8 +52,13 @@ class Sfx {
     return this.muted;
   }
 
+  setPaused(paused) {
+    this.paused = paused;
+    if (this.master) this.master.gain.value = this.muted || paused ? 0 : MASTER_VOL;
+  }
+
   get ready() {
-    return !!this.ctx && !this.muted;
+    return !!this.ctx && !this.muted && !this.paused;
   }
 
   tone(freq, end, dur, type = 'sine', vol = 0.15, delay = 0) {

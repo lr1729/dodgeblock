@@ -78,10 +78,10 @@ a ledge by at most six pixels is corrected into an open gap only when horizontal
 movement already points there.
 
 A lethal block kills only when its descending lower face reaches the player's
-head above the crush threshold. Side and corner contacts push. Incidental top
-contact with a moving block is resolved as ordinary support and grants no
-special boost. This makes contact direction, rather than material intersection
-alone, determine the outcome.
+head with at least six pixels of horizontal overlap. Side contact and shallower
+shoulder grazes push. Incidental top contact with a moving block is resolved as
+ordinary support and grants no special boost. This makes contact direction,
+rather than material intersection alone, determine the outcome.
 
 Valid fixed footing awards new-height recharge immediately, so held auto-hop
 does not lose progress. Jumping remains forgiving through six-frame ground

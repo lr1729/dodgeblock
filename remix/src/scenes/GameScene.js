@@ -109,6 +109,7 @@ export class GameScene extends Phaser.Scene {
     this.focusPreviewBranch = new Set();
     this.focusPreviewTopology = -1;
     this.lastFocusCountdownBand = 0;
+    this.paused = false;
     this.bestHeightAtStart = storage.bestForRules(this.rules);
     this.wireEvents();
 
@@ -156,8 +157,60 @@ export class GameScene extends Phaser.Scene {
     if (this.inp.touch && isMobile(this)) new TouchHints(this, this.inp.touch);
     // This stays above the HUD until incoming blocks clear its footprint.
     this.warningGfx = this.add.graphics();
+    this.createPauseOverlay();
+    this.input.keyboard.on('keydown-ESC', () => this.setPaused(!this.paused));
+    this.pauseOnBlur = () => this.setPaused(true);
+    this.pauseOnVisibility = () => {
+      if (document.hidden) this.setPaused(true);
+    };
+    window.addEventListener('blur', this.pauseOnBlur);
+    document.addEventListener('visibilitychange', this.pauseOnVisibility);
+    this.events.once('shutdown', () => {
+      window.removeEventListener('blur', this.pauseOnBlur);
+      document.removeEventListener('visibilitychange', this.pauseOnVisibility);
+      music.setPaused(false);
+      sfx.setPaused(false);
+    });
     music.attach(sfx);
     installTestHooks(this);
+  }
+
+  createPauseOverlay() {
+    const shade = this.add
+      .rectangle(GAME_W / 2, GAME_H / 2, GAME_W, GAME_H, 0x17313d, 0.7)
+      .setInteractive();
+    const title = this.add
+      .text(GAME_W / 2, 205, 'PAUSED', textStyle(30, {
+        color: '#ffffff',
+        fontStyle: 'bold',
+      }))
+      .setOrigin(0.5);
+    const button = this.add
+      .circle(GAME_W / 2, 280, 31, 0xe8433f)
+      .setStrokeStyle(2, 0x972d2a)
+      .setName('Resume')
+      .setInteractive({ useHandCursor: true });
+    const icon = this.add.graphics();
+    icon.fillStyle(0xffffff, 1);
+    icon.fillTriangle(393, 265, 393, 295, 416, 280);
+    button.on('pointerover', () => button.setFillStyle(0xf1534f));
+    button.on('pointerout', () => button.setFillStyle(0xe8433f));
+    button.on('pointerdown', () => this.setPaused(false));
+    this.pauseOverlay = this.add
+      .container(0, 0, [shade, title, button, icon])
+      .setDepth(1000)
+      .setVisible(false);
+  }
+
+  setPaused(paused) {
+    if (!this.sim || this.sim.dead || this.paused === paused) return;
+    this.paused = paused;
+    this.accumulator = 0;
+    this.inp.reset();
+    this.pauseOverlay?.setVisible(paused);
+    music.setPaused(paused);
+    sfx.setPaused(paused);
+    if (!paused) sfx.init();
   }
 
   wireEvents() {
@@ -281,6 +334,10 @@ export class GameScene extends Phaser.Scene {
 
   update(time, delta) {
     const sim = this.sim;
+    if (this.paused) {
+      this.accumulator = 0;
+      return;
+    }
     this.juice.update(delta);
     this.accumulator += Math.min(delta, 250) * this.juice.timeScale;
     let steps = 0;

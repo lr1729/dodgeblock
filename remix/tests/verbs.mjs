@@ -168,6 +168,28 @@ test('touch swipe preserves an intentional zero direction axis', () => {
   assert.equal(input.consumePressed().focusReleased, true);
 });
 
+test('reset clears queued and held touch input while paused', () => {
+  const { input, pointerHandlers } = touchInputHarness();
+  const pointer = { id: 9, x: 100, y: 400, isDown: true, downTime: performance.now() - 150 };
+  pointerHandlers.get('pointerdown')(pointer);
+  pointer.y = 340;
+  pointerHandlers.get('pointermove')(pointer);
+  assert.equal(input.focusHeld, true);
+
+  input.reset();
+
+  assert.equal(input.focusHeld, false);
+  assert.equal(input.up, false);
+  assert.equal(input.left, false);
+  assert.deepEqual(input.consumePressed(), {
+    jumpPressed: false,
+    focusPressed: false,
+    focusReleased: false,
+    focusDirX: 0,
+    focusDirY: 0,
+  });
+});
+
 test('a prompt vertical swipe starts Focus without the horizontal reversal delay', () => {
   const { input, pointerHandlers } = touchInputHarness();
   const pointer = { id: 4, x: 600, y: 400, isDown: true, downTime: performance.now() };
