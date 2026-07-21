@@ -21,8 +21,8 @@ periodic shield, or secondary reward economy.
 | Pause / resume | `Esc` | Resume with the play button |
 | Mute | `M` | - |
 
-Held jump auto-hops from stable footing. At a wall, press jump again, steer away,
-or tap toward it while holding jump; merely brushing a wall cannot launch you.
+Held jump auto-hops from stable footing. Wall jumps require a fresh jump press;
+horizontal input only controls the approach and subsequent air steering.
 
 Focus slows the whole simulation to 10% speed for at most 1.5 real seconds.
 The player continues moving and can adjust the eight-way aim direction. Release

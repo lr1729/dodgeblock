@@ -20,7 +20,6 @@ export function createInput(scene) {
   const k = scene.input.keyboard.addKeys('UP,DOWN,LEFT,RIGHT,W,A,S,D,SPACE');
   const pressed = {
     jump: false,
-    moveDir: 0,
     focus: false,
     focusReleased: false,
     focusDirX: 0,
@@ -31,14 +30,6 @@ export function createInput(scene) {
   scene.input.keyboard.on('keydown', (e) => {
     if (e.repeat) return;
     switch (e.code) {
-      case 'ArrowLeft':
-      case 'KeyA':
-        pressed.moveDir = -1;
-        break;
-      case 'ArrowRight':
-      case 'KeyD':
-        pressed.moveDir = 1;
-        break;
       case 'ArrowUp':
       case 'KeyW':
       case 'Space':
@@ -84,20 +75,17 @@ export function createInput(scene) {
     consumePressed() {
       const out = {
         jumpPressed: pressed.jump,
-        movePressed: pressed.moveDir,
         focusPressed: pressed.focus,
         focusReleased: pressed.focusReleased,
         focusDirX: pressed.focusDirX || touch?.focusDirX || 0,
         focusDirY: pressed.focusDirY || touch?.focusDirY || 0,
       };
       pressed.jump = pressed.focus = pressed.focusReleased = false;
-      pressed.moveDir = 0;
       pressed.focusDirX = pressed.focusDirY = 0;
       return out;
     },
     reset() {
       pressed.jump = pressed.focus = pressed.focusReleased = false;
-      pressed.moveDir = 0;
       pressed.focusDirX = pressed.focusDirY = 0;
       focusKeys.clear();
       touch?.reset();
@@ -179,7 +167,6 @@ function createTouch(scene, pressed) {
       focusDirY: 0,
     });
     if (zone === 'jump') pressed.jump = true;
-    else pressed.moveDir = zone === 'left' ? -1 : 1;
     if (touch.onZonePress) touch.onZonePress(zone);
   };
 

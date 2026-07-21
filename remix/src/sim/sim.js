@@ -89,7 +89,6 @@ export const NEUTRAL_INPUT = Object.freeze({
   left: false,
   right: false,
   jumpPressed: false,
-  movePressed: 0,
   focusPressed: false,
   focusReleased: false,
   focusHeld: false,
@@ -198,16 +197,11 @@ export class Sim {
       const axis = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
       p.move(axis, worldScale);
 
-      // Held jump repeats on footing. At a wall, steering away or freshly
-      // pressing toward it expresses intent without making passive contact
-      // trigger a jump.
+      // Held jump repeats on footing, but wall jumps require a fresh press.
+      // Movement remains independent, so brushing a wall cannot spend the
+      // player's one jump from that side.
       const bufferedJump = this.jumpBuffer > 0;
-      const rememberedWall = p.wallSide || p.wallCoyoteSide;
-      const heldWallJump =
-        inp.up &&
-        rememberedWall !== 0 &&
-        (axis === -rememberedWall || inp.movePressed === rememberedWall);
-      if ((bufferedJump || inp.up) && p.jump(bufferedJump || heldWallJump)) {
+      if ((bufferedJump || inp.up) && p.jump(bufferedJump)) {
         this.jumpBuffer = 0;
         this.events.emit('jump', { x: p.x + p.w / 2, y: p.y });
       }
