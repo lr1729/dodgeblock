@@ -76,11 +76,12 @@ export class Player {
     }
   }
 
-  jump() {
+  jump(allowWallJump = true) {
     if (this.timeSinceJump <= 2) return false;
     const grounded = this.offGround <= COYOTE_FRAMES;
     const rememberedWall = this.wallSide || this.wallCoyoteSide;
     const canWallJump =
+      allowWallJump &&
       !grounded &&
       rememberedWall !== 0 &&
       rememberedWall !== this.lastWallJumpSide;

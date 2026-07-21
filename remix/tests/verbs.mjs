@@ -649,6 +649,11 @@ test('wall jump launches away once until another wall or landing resets it', () 
   p.offGround = 20;
   p.wallSide = 1;
 
+  sim.step({ ...N, up: true });
+  assert.equal(p.lastWallJumpSide, 0, 'held auto-hop triggered a wall jump');
+
+  p.wallSide = 1;
+  p.timeSinceJump = 10;
   sim.step({ ...N, up: true, jumpPressed: true });
   assert.ok(p.xVel < 0, `wall jump did not launch left: ${p.xVel}`);
   assert.equal(p.lastWallJumpSide, 1);

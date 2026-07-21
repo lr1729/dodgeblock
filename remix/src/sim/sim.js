@@ -197,9 +197,10 @@ export class Sim {
       const axis = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
       p.move(axis, worldScale);
 
-      // Held jump repeats as soon as valid footing returns. The explicit
-      // buffer still preserves short taps made just before landing.
-      if ((this.jumpBuffer > 0 || inp.up) && p.jump()) {
+      // Held jump repeats on footing only. Wall jumps require a fresh buffered
+      // press so brushing a wall while auto-hopping cannot trigger one.
+      const bufferedJump = this.jumpBuffer > 0;
+      if ((bufferedJump || inp.up) && p.jump(bufferedJump)) {
         this.jumpBuffer = 0;
         this.events.emit('jump', { x: p.x + p.w / 2, y: p.y });
       }

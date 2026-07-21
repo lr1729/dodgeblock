@@ -21,6 +21,9 @@ periodic shield, or secondary reward economy.
 | Pause / resume | `Esc` | Resume with the play button |
 | Mute | `M` | - |
 
+Held jump auto-hops from stable footing. Wall jumps require a fresh press, so
+merely brushing a wall while holding jump cannot launch the player away.
+
 Focus slows the whole simulation to 10% speed for at most 1.5 real seconds.
 The player continues moving and can adjust the eight-way aim direction. Release
 early, or let the timer expire, to commit the dash. Releasing a direction key

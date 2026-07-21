@@ -70,12 +70,12 @@ This bounds material droughts without scheduling a rescue at a useful location.
 
 Horizontal starts, reversals, and stops use separate curves: four frames to top
 ground speed, seven for a full reversal, and three to stop. Held jump repeats on
-valid footing. Jump buffering and coyote time make late input reliable. A wall
-jump can be used once from a given wall until the player lands or reaches the
-opposite wall. Solid contacts resolve to exact faces, so alignment never depends
-on the fractional position of the previous frame. A descending player who clips
-a ledge by at most six pixels is corrected into an open gap only when horizontal
-movement already points there.
+valid footing, while a wall jump requires a fresh buffered press. Jump buffering
+and coyote time make late input reliable. A wall jump can be used once from a
+given wall until the player lands or reaches the opposite wall. Solid contacts
+resolve to exact faces, so alignment never depends on the fractional position of
+the previous frame. A descending player who clips a ledge by at most six pixels
+is corrected into an open gap only when horizontal movement already points there.
 
 A lethal block kills only when its descending lower face reaches the player's
 head with at least six pixels of horizontal overlap. Side contact and shallower
