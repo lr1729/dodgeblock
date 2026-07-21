@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   BLOCK_FALL_CAP,
   BLOCK_H,
+  BLOCK_W,
   CARVE_WARNING_FRAMES,
   COLLAPSE_WARNING_FRAMES,
   FOCUS_AIM_MAX_FRAMES,
@@ -377,6 +378,28 @@ test('Focus does not hit a touching block when moving away from it', () => {
   assert.ok(p.x > block.x + block.w, 'Focus failed to move away from the touching block');
 });
 
+test('committing Focus clears stale footing and wall-jump memory', () => {
+  const sim = quietSim(421);
+  const support = fixedBlock(sim, 10, 2, 'wood');
+  const p = sim.player;
+  p.supportBlock = support;
+  p.offGround = 20;
+  p.rememberWall(1);
+  p.focusDX = -1;
+  p.focusDY = 0;
+  p.focusAimTimer = 1;
+
+  sim.commitFocus();
+
+  assert.equal(p.supportBlock, null);
+  assert.equal(p.wallSide, 0);
+  assert.equal(p.wallCoyoteSide, 0);
+  sim.endFocus('test');
+  p.timeSinceJump = 10;
+  sim.step({ ...N, up: true, left: true });
+  assert.equal(p.lastWallJumpSide, 0, 'Focus left a wall jump available in open air');
+});
+
 test('Focus cuts settled terrain from all eight directions', () => {
   const approaches = [
     { dx: 1, dy: 0, place: (p, b) => [b.x - p.w - 4, b.y + 5] },
@@ -654,6 +677,13 @@ test('wall jump launches away once until another wall or landing resets it', () 
 
   p.wallSide = 1;
   p.timeSinceJump = 10;
+  sim.step({ ...N, up: true, left: true });
+  assert.equal(p.lastWallJumpSide, 1, 'movement away from the wall did not wall jump');
+  assert.ok(p.xVel < 0, `directed wall jump did not launch left: ${p.xVel}`);
+
+  p.lastWallJumpSide = 0;
+  p.wallSide = 1;
+  p.timeSinceJump = 10;
   sim.step({ ...N, up: true, jumpPressed: true });
   assert.ok(p.xVel < 0, `wall jump did not launch left: ${p.xVel}`);
   assert.equal(p.lastWallJumpSide, 1);
@@ -754,6 +784,19 @@ test('a small rising head-corner overlap is corrected without cancelling the jum
   assert.ok(p.yVel > 0, `corner correction cancelled upward velocity: ${p.yVel}`);
 });
 
+test('rising corner correction cannot enter an in-flight block', () => {
+  const sim = quietSim(626);
+  const ceiling = fixedBlock(sim, 10, 3, 'wood');
+  const p = sim.player;
+  const candidateX = ceiling.x - p.w;
+  p.x = candidateX + 3;
+  p.y = ceiling.y + ceiling.h + 1;
+  sim.blocks.spawnAt(candidateX - BLOCK_W + 2, p.y, 'gravel', { yVel: 0, shade: 0 });
+
+  assert.equal(sim.tryUpwardCornerCorrection(ceiling), false);
+  approx(p.x, candidateX + 3);
+});
+
 test('a small falling ledge overlap follows horizontal intent into an open gap', () => {
   const sim = quietSim(624);
   const ledge = fixedBlock(sim, 10, 3, 'wood');
@@ -770,6 +813,20 @@ test('a small falling ledge overlap follows horizontal intent into an open gap',
   approx(p.x, ledge.x - p.w);
   approx(p.y, fromY + 12);
   assert.ok(p.offGround > 0, 'gap assist incorrectly landed on the ledge');
+});
+
+test('falling corner correction cannot enter an in-flight block', () => {
+  const sim = quietSim(627);
+  const ledge = fixedBlock(sim, 10, 3, 'wood');
+  const p = sim.player;
+  const candidateX = ledge.x - p.w;
+  p.x = candidateX + 3;
+  p.y = ledge.y - p.h + 1;
+  p.xVel = -3;
+  sim.blocks.spawnAt(candidateX - BLOCK_W + 2, p.y, 'gravel', { yVel: 0, shade: 0 });
+
+  assert.equal(sim.tryDownwardCornerCorrection(ledge), false);
+  approx(p.x, candidateX + 3);
 });
 
 test('falling ledge correction requires matching horizontal intent', () => {

@@ -197,10 +197,16 @@ export class Sim {
       const axis = (inp.right ? 1 : 0) - (inp.left ? 1 : 0);
       p.move(axis, worldScale);
 
-      // Held jump repeats on footing only. Wall jumps require a fresh buffered
-      // press so brushing a wall while auto-hopping cannot trigger one.
+      // Held jump repeats on footing. At a wall it also accepts explicit
+      // movement away from that wall, while a neutral wall jump needs a fresh
+      // buffered press. Merely brushing a wall cannot trigger one.
       const bufferedJump = this.jumpBuffer > 0;
-      if ((bufferedJump || inp.up) && p.jump(bufferedJump)) {
+      const rememberedWall = p.wallSide || p.wallCoyoteSide;
+      const heldWallJump =
+        inp.up &&
+        rememberedWall !== 0 &&
+        axis === -rememberedWall;
+      if ((bufferedJump || inp.up) && p.jump(bufferedJump || heldWallJump)) {
         this.jumpBuffer = 0;
         this.events.emit('jump', { x: p.x + p.w / 2, y: p.y });
       }
@@ -299,6 +305,8 @@ export class Sim {
     p.focusCommittedFrame = this.frame;
     p.xVel = 0;
     p.yVel = 0;
+    p.supportBlock = null;
+    p.clearWallCoyote();
     this.events.emit('focusAimEnd', { heldFrames });
     this.events.emit('focusStart', {
       x: p.x,
@@ -679,12 +687,7 @@ export class Sim {
       .sort((a, b) => a.distance - b.distance || a.preference - b.preference);
 
     for (const candidate of candidates) {
-      if (candidate.x < PLAYER_MIN_X || candidate.x > PLAYER_MAX_X - p.w) continue;
-      const probe = { x: candidate.x, y: p.y, w: p.w, h: p.h };
-      const obstructed = this.blocks.blocks.some(
-        (other) => other.fixed && other !== block && rectrectStrict(probe, other),
-      );
-      if (obstructed) continue;
+      if (!this.canPlacePlayer(candidate.x, p.y, block)) continue;
       p.x = candidate.x;
       return true;
     }
@@ -697,13 +700,7 @@ export class Sim {
     if (direction === 0) return false;
     const x = direction < 0 ? block.x - p.w : block.x + block.w;
     if (Math.abs(x - p.x) > DOWNWARD_CORRECTION_PX + CONTACT_EPSILON) return false;
-    if (x < PLAYER_MIN_X || x > PLAYER_MAX_X - p.w) return false;
-
-    const probe = { x, y: p.y, w: p.w, h: p.h };
-    const obstructed = this.blocks.blocks.some(
-      (other) => other !== block && other.fixed && rectrectStrict(probe, other),
-    );
-    if (obstructed || rectrectStrict(probe, GROUND)) return false;
+    if (!this.canPlacePlayer(x, p.y, block)) return false;
     p.x = x;
     return true;
   }
