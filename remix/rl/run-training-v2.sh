@@ -21,6 +21,7 @@ args=(
   --replay-capacity "${DODGEBLOCK_REPLAY_CAPACITY:-32768}"
   --minimum-replay "${DODGEBLOCK_MINIMUM_REPLAY:-1024}"
   --replay-ratio "${DODGEBLOCK_REPLAY_RATIO:-2.0}"
+  --exploration-hold "${DODGEBLOCK_EXPLORATION_HOLD:-4}"
 )
 
 if [[ -e "$checkpoint_dir/latest.pt" ]]; then

@@ -11,13 +11,13 @@ import torch
 
 from r2d2 import (
     PrioritizedSequenceReplay,
+    PersistentEpsilonExplorer,
     RecurrentQNetwork,
     SequenceAssembler,
     ema_update,
     exploration_rates,
     greedy_actions,
     learn_batch,
-    sample_valid_actions,
     tensor_observation,
 )
 from v2_bridge import ParallelEnvBridge
@@ -46,6 +46,7 @@ def arguments():
     parser.add_argument('--learning-rate', type=float, default=1e-4)
     parser.add_argument('--weight-decay', type=float, default=1e-5)
     parser.add_argument('--target-tau', type=float, default=0.002)
+    parser.add_argument('--exploration-hold', type=int, default=4)
     parser.add_argument('--archive-probability', type=float, default=0.25)
     parser.add_argument('--archive-capacity', type=int, default=2048)
     parser.add_argument('--checkpoint-dir', default=str(Path.home() / 'dodgeblock-r2d2/checkpoints'))
@@ -132,8 +133,10 @@ def main():
     )
     assembler = SequenceAssembler(env_count, args.burn_in, args.unroll, args.n_step)
     replay = PrioritizedSequenceReplay(args.replay_capacity, args.priority_alpha)
-    rng = np.random.default_rng(args.seed ^ 0x5EED5EED)
+    replay_rng = np.random.default_rng(args.seed ^ 0x5EED5EED)
+    actor_rng = np.random.default_rng(args.seed ^ 0xAC710)
     epsilons = exploration_rates(env_count)
+    explorer = PersistentEpsilonExplorer(epsilons, args.exploration_hold, actor_rng)
     fresh_episodes = deque(maxlen=500)
     curriculum_episodes = deque(maxlen=500)
     recent_losses = deque(maxlen=200)
@@ -174,6 +177,7 @@ def main():
         'discount_half_life_world_frames': half_life,
         'n_step': args.n_step,
         'replay_capacity': args.replay_capacity,
+        'exploration_hold': args.exploration_hold,
         'compiled': args.compile,
     }), flush=True)
 
@@ -192,11 +196,10 @@ def main():
                 quantiles, hidden = online(observation, hidden)
                 greedy = greedy_actions(quantiles, observation).cpu().numpy()
             timing['inference'] += time.perf_counter() - phase_started
-            explore = rng.random(env_count) < epsilons
-            random_actions = sample_valid_actions(packet['state'], rng)
-            actions = np.where(explore, random_actions, greedy).astype(np.uint8)
+            actions = explorer.select(greedy, packet['state'])
             phase_started = time.perf_counter()
             packet = bridge.step(actions)
+            explorer.reset(packet['dones'])
             timing['environment'] += time.perf_counter() - phase_started
             frames += env_count
             done_indices = np.flatnonzero(packet['dones'])
@@ -221,7 +224,7 @@ def main():
                     progress = min(1.0, frames / max(1, args.total_frames))
                     beta = args.priority_beta_start + (1 - args.priority_beta_start) * progress
                     phase_started = time.perf_counter()
-                    indices, weights, batch = replay.sample(args.batch_size, beta, rng)
+                    indices, weights, batch = replay.sample(args.batch_size, beta, replay_rng)
                     timing['sampling'] += time.perf_counter() - phase_started
                     online.train()
                     phase_started = time.perf_counter()

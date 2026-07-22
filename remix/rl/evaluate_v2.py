@@ -7,6 +7,7 @@ import torch
 
 from r2d2 import (
     RecurrentQNetwork,
+    PersistentEpsilonExplorer,
     greedy_actions,
     interquartile_mean,
     sample_valid_actions,
@@ -45,6 +46,7 @@ def main():
     parser.add_argument('--no-amp', action='store_true')
     parser.add_argument('--policy', choices=('model', 'random', 'noop'), default='model')
     parser.add_argument('--epsilon', type=float, default=0.0)
+    parser.add_argument('--exploration-hold', type=int, default=1)
     args = parser.parse_args()
     if args.episodes % args.workers:
         raise ValueError('--episodes must be divisible by --workers')
@@ -71,6 +73,11 @@ def main():
     action_counts = np.zeros(len(ACTION_NAMES), np.int64)
     greedy_action_counts = np.zeros(len(ACTION_NAMES), np.int64)
     action_rng = np.random.default_rng(args.seed ^ 0xA7710)
+    explorer = PersistentEpsilonExplorer(
+        np.full(args.episodes, args.epsilon),
+        args.exploration_hold,
+        action_rng,
+    )
     amp = not args.no_amp
 
     try:
@@ -85,9 +92,7 @@ def main():
                     quantiles, hidden = model(observation, hidden)
                     greedy = greedy_actions(quantiles, observation).cpu().numpy().astype(np.uint8)
                 greedy_action_counts += np.bincount(greedy[active], minlength=len(ACTION_NAMES))
-                explore = action_rng.random(args.episodes) < args.epsilon
-                random_actions = sample_valid_actions(packet['state'], action_rng)
-                actions = np.where(explore, random_actions, greedy).astype(np.uint8)
+                actions = explorer.select(greedy, packet['state'])
             elif args.policy == 'random':
                 actions = sample_valid_actions(packet['state'], action_rng)
             else:
@@ -95,6 +100,7 @@ def main():
             action_counts += np.bincount(actions[active], minlength=len(ACTION_NAMES))
             actions[~active] = 0
             packet = bridge.step(actions)
+            explorer.reset(packet['dones'])
             lengths[active] += 1
 
             succeeded = active & (packet['current_heights'] >= args.target_height)

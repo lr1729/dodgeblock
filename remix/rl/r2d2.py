@@ -63,6 +63,43 @@ def sample_valid_actions(state, rng):
     return scores.argmax(axis=-1).astype(np.uint8)
 
 
+class PersistentEpsilonExplorer:
+    def __init__(self, epsilons, hold, rng):
+        if hold < 1:
+            raise ValueError('exploration hold must be at least one frame')
+        self.epsilons = np.asarray(epsilons, np.float64)
+        self.hold = hold
+        self.rng = rng
+        self.actions = np.zeros(len(self.epsilons), np.uint8)
+        self.remaining = np.zeros(len(self.epsilons), np.int32)
+        self.start_probability = self.epsilons / (
+            hold - self.epsilons * (hold - 1)
+        )
+
+    def select(self, greedy, state):
+        greedy = np.asarray(greedy, np.uint8)
+        valid = valid_action_mask_numpy(state)
+        indices = np.arange(len(greedy))
+        self.remaining[~valid[indices, self.actions]] = 0
+
+        selected = greedy.copy()
+        active = self.remaining > 0
+        selected[active] = self.actions[active]
+        self.remaining[active] -= 1
+
+        idle = ~active
+        starting = idle & (self.rng.random(len(greedy)) < self.start_probability)
+        if starting.any():
+            sampled = sample_valid_actions(state, self.rng)
+            self.actions[starting] = sampled[starting]
+            self.remaining[starting] = self.hold - 1
+            selected[starting] = sampled[starting]
+        return selected
+
+    def reset(self, dones):
+        self.remaining[np.asarray(dones, dtype=bool)] = 0
+
+
 class ResidualBlock(nn.Module):
     def __init__(self, channels):
         super().__init__()

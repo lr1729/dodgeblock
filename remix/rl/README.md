@@ -37,6 +37,10 @@ The training contract intentionally differs from assisted browser play:
   by the common five-step, four-frame-repeat Atari configuration.
 - A training-only archive retains diverse stable states at 100-height bands.
   Evaluation always starts at height zero on held-out seeds.
+- Epsilon exploration holds a sampled valid action for four frames, providing
+  coherent movement bursts without reducing the greedy policy's 60 Hz control.
+  Actor exploration and replay sampling use independent RNG streams so replay
+  ablations do not silently change the behavior-noise sequence.
 - Replay stores contiguous float observations in half precision. The default
   32,768 sequences cover about 2.6 million non-overlapping transitions while
   remaining in host RAM; simulator state and reward calculation remain full
