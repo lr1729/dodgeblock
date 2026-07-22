@@ -10,6 +10,14 @@ from v2_bridge import ParallelEnvBridge
 
 
 OBSERVATION_KEYS = ('terrain', 'skyline', 'falling', 'forecasts', 'state')
+ACTION_NAMES = (
+    'neutral', 'left', 'right',
+    'up', 'up-left', 'up-right',
+    'down', 'down-left', 'down-right',
+    'focus', 'focus-left', 'focus-right',
+    'focus-up', 'focus-up-left', 'focus-up-right',
+    'focus-down', 'focus-down-left', 'focus-down-right',
+)
 
 
 def bootstrap_interval(values, statistic, rng, samples=2_000):
@@ -29,9 +37,13 @@ def main():
     parser.add_argument('--max-frames', type=int, default=300_000)
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--no-amp', action='store_true')
+    parser.add_argument('--policy', choices=('model', 'random', 'noop'), default='model')
+    parser.add_argument('--epsilon', type=float, default=0.0)
     args = parser.parse_args()
     if args.episodes % args.workers:
         raise ValueError('--episodes must be divisible by --workers')
+    if not 0 <= args.epsilon <= 1:
+        raise ValueError('--epsilon must be in [0, 1]')
 
     device = torch.device(args.device)
     torch.set_float32_matmul_precision('high')
@@ -50,18 +62,31 @@ def main():
     heights = np.zeros(args.episodes, np.float32)
     lengths = np.zeros(args.episodes, np.int64)
     outcomes = np.full(args.episodes, 'timeout', dtype=object)
+    action_counts = np.zeros(len(ACTION_NAMES), np.int64)
+    greedy_action_counts = np.zeros(len(ACTION_NAMES), np.int64)
+    action_rng = np.random.default_rng(args.seed ^ 0xA7710)
     amp = not args.no_amp
 
     try:
         for _frame in range(args.max_frames):
-            observation = tensor_observation({key: packet[key] for key in OBSERVATION_KEYS}, device)
-            with torch.inference_mode(), torch.autocast(
-                device_type=device.type,
-                dtype=torch.bfloat16,
-                enabled=amp and device.type == 'cuda',
-            ):
-                quantiles, hidden = model(observation, hidden)
-                actions = quantiles.float().mean(dim=-1).argmax(dim=-1).cpu().numpy().astype(np.uint8)
+            if args.policy == 'model':
+                observation = tensor_observation({key: packet[key] for key in OBSERVATION_KEYS}, device)
+                with torch.inference_mode(), torch.autocast(
+                    device_type=device.type,
+                    dtype=torch.bfloat16,
+                    enabled=amp and device.type == 'cuda',
+                ):
+                    quantiles, hidden = model(observation, hidden)
+                    greedy = quantiles.float().mean(dim=-1).argmax(dim=-1).cpu().numpy().astype(np.uint8)
+                greedy_action_counts += np.bincount(greedy[active], minlength=len(ACTION_NAMES))
+                explore = action_rng.random(args.episodes) < args.epsilon
+                random_actions = action_rng.integers(0, len(ACTION_NAMES), args.episodes, dtype=np.uint8)
+                actions = np.where(explore, random_actions, greedy).astype(np.uint8)
+            elif args.policy == 'random':
+                actions = action_rng.integers(0, len(ACTION_NAMES), args.episodes, dtype=np.uint8)
+            else:
+                actions = np.zeros(args.episodes, np.uint8)
+            action_counts += np.bincount(actions[active], minlength=len(ACTION_NAMES))
             actions[~active] = 0
             packet = bridge.step(actions)
             lengths[active] += 1
@@ -89,6 +114,8 @@ def main():
         'training_frames': int(saved.get('frames', 0)),
         'episodes': args.episodes,
         'seed': args.seed,
+        'policy': args.policy,
+        'epsilon': args.epsilon,
         'mean_height': round(float(heights.mean()), 2),
         'mean_height_ci95': bootstrap_interval(heights, np.mean, bootstrap_rng),
         'median_height': round(float(np.median(heights)), 2),
@@ -103,7 +130,18 @@ def main():
         'success_10k': round(float(np.mean(heights >= 10_000)), 4),
         'deaths': int(np.sum(outcomes == 'death')),
         'timeouts': int(np.sum(outcomes == 'timeout')),
+        'action_fractions': {
+            name: round(float(count / max(1, action_counts.sum())), 4)
+            for name, count in zip(ACTION_NAMES, action_counts)
+            if count
+        },
     }
+    if args.policy == 'model':
+        result['greedy_action_fractions'] = {
+            name: round(float(count / max(1, greedy_action_counts.sum())), 4)
+            for name, count in zip(ACTION_NAMES, greedy_action_counts)
+            if count
+        }
     print(json.dumps(result, indent=2))
 
 
