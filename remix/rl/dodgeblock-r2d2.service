@@ -13,7 +13,10 @@ CPUWeight=40
 Environment=PYTHONUNBUFFERED=1
 Environment=CUDA_VISIBLE_DEVICES=1
 Environment=DODGEBLOCK_PYTHON=%h/envs/dodgeblock-rl/bin/python
-Environment=DODGEBLOCK_CHECKPOINT_DIR=%h/dodgeblock-r2d2-v3/checkpoints
+Environment=DODGEBLOCK_CHECKPOINT_DIR=%h/dodgeblock-r2d2-v4/checkpoints
+Environment=DODGEBLOCK_TOTAL_FRAMES=10000000
+Environment=DODGEBLOCK_EVAL_AFTER_TRAIN=1
+Environment=DODGEBLOCK_EVAL_EPISODES=256
 CPUAffinity=0-5 7-15 17-19
 
 [Install]
