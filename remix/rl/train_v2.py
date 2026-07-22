@@ -33,11 +33,11 @@ def arguments():
     parser.add_argument('--quantiles', type=int, default=51)
     parser.add_argument('--burn-in', type=int, default=40)
     parser.add_argument('--unroll', type=int, default=80)
-    parser.add_argument('--n-step', type=int, default=5)
-    parser.add_argument('--gamma', type=float, default=0.9995)
+    parser.add_argument('--n-step', type=int, default=20)
+    parser.add_argument('--gamma', type=float, default=0.99999)
     parser.add_argument('--batch-size', type=int, default=64)
-    parser.add_argument('--replay-capacity', type=int, default=8192)
-    parser.add_argument('--minimum-replay', type=int, default=512)
+    parser.add_argument('--replay-capacity', type=int, default=32768)
+    parser.add_argument('--minimum-replay', type=int, default=1024)
     parser.add_argument('--replay-ratio', type=float, default=2.0)
     parser.add_argument('--priority-alpha', type=float, default=0.6)
     parser.add_argument('--priority-beta-start', type=float, default=0.4)
@@ -51,6 +51,8 @@ def arguments():
     parser.add_argument('--log-interval', type=float, default=20.0)
     parser.add_argument('--resume')
     parser.add_argument('--no-amp', action='store_true')
+    parser.add_argument('--compile', action='store_true')
+    parser.add_argument('--compile-mode', default='default')
     return parser.parse_args()
 
 
@@ -85,11 +87,15 @@ def window_stats(records):
 
 def main():
     args = arguments()
+    if not 0 < args.gamma <= 1:
+        raise ValueError('--gamma must be in (0, 1]')
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     torch.set_num_threads(args.threads)
+    torch.set_float32_matmul_precision('high')
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
     device = torch.device(args.device)
     if device.type == 'cuda' and not torch.cuda.is_available():
         raise RuntimeError('CUDA was requested but is unavailable')
@@ -110,6 +116,9 @@ def main():
         optimizer.load_state_dict(saved['optimizer'])
         frames = int(saved['frames'])
         learner_updates = int(saved.get('learner_updates', 0))
+    if args.compile:
+        online.compile(mode=args.compile_mode, dynamic=False)
+        target.compile(mode=args.compile_mode, dynamic=False)
 
     env_count = args.workers * args.envs_per_worker
     bridge = ParallelEnvBridge(
@@ -128,6 +137,7 @@ def main():
     recent_losses = deque(maxlen=200)
     recent_grad_norms = deque(maxlen=200)
     recent_q = deque(maxlen=200)
+    timing = {name: 0.0 for name in ('inference', 'environment', 'assembly', 'sampling', 'learning')}
     update_budget = 0.0
     stop = False
     checkpoint_dir = Path(args.checkpoint_dir)
@@ -148,6 +158,7 @@ def main():
     last_log_frames = frames
     amp = not args.no_amp
     parameter_count = sum(parameter.numel() for parameter in online.parameters())
+    half_life = None if args.gamma == 1 else round(np.log(0.5) / np.log(args.gamma), 1)
     print(json.dumps({
         'event': 'start',
         'frames': frames,
@@ -157,10 +168,16 @@ def main():
         'workers': args.workers,
         'parameters': parameter_count,
         'archive_probability': args.archive_probability,
+        'gamma_per_world_frame': args.gamma,
+        'discount_half_life_world_frames': half_life,
+        'n_step': args.n_step,
+        'replay_capacity': args.replay_capacity,
+        'compiled': args.compile,
     }), flush=True)
 
     try:
         while frames < args.total_frames and not stop:
+            phase_started = time.perf_counter()
             online.eval()
             observation = tensor_observation({
                 key: packet[key] for key in ('terrain', 'skyline', 'falling', 'forecasts', 'state')
@@ -172,9 +189,12 @@ def main():
             ):
                 quantiles, hidden = online(observation, hidden)
                 greedy = quantiles.float().mean(dim=-1).argmax(dim=-1).cpu().numpy()
+            timing['inference'] += time.perf_counter() - phase_started
             explore = rng.random(env_count) < epsilons
             actions = np.where(explore, rng.integers(0, 18, env_count), greedy).astype(np.uint8)
+            phase_started = time.perf_counter()
             packet = bridge.step(actions)
+            timing['environment'] += time.perf_counter() - phase_started
             frames += env_count
             done_indices = np.flatnonzero(packet['dones'])
             if len(done_indices):
@@ -187,16 +207,21 @@ def main():
                     else:
                         fresh_episodes.append(record)
 
+            phase_started = time.perf_counter()
             for sequence in assembler.append(actions, packet):
                 replay.add(sequence)
+            timing['assembly'] += time.perf_counter() - phase_started
 
             if len(replay) >= args.minimum_replay:
                 update_budget += env_count * args.replay_ratio / (args.batch_size * args.unroll)
                 while update_budget >= 1:
                     progress = min(1.0, frames / max(1, args.total_frames))
                     beta = args.priority_beta_start + (1 - args.priority_beta_start) * progress
+                    phase_started = time.perf_counter()
                     indices, weights, batch = replay.sample(args.batch_size, beta, rng)
+                    timing['sampling'] += time.perf_counter() - phase_started
                     online.train()
+                    phase_started = time.perf_counter()
                     result = learn_batch(
                         online,
                         target,
@@ -210,6 +235,7 @@ def main():
                         device,
                         amp=amp,
                     )
+                    timing['learning'] += time.perf_counter() - phase_started
                     replay.update_priorities(indices, result['priorities'])
                     ema_update(target, online, args.target_tau)
                     recent_losses.append(result['loss'])
@@ -233,9 +259,21 @@ def main():
                     'fresh': window_stats(fresh_episodes),
                     'curriculum': window_stats(curriculum_episodes),
                 }
+                if device.type == 'cuda':
+                    stats['gpu_memory_gib'] = {
+                        'allocated': round(torch.cuda.memory_allocated(device) / 2**30, 2),
+                        'reserved': round(torch.cuda.memory_reserved(device) / 2**30, 2),
+                        'peak': round(torch.cuda.max_memory_allocated(device) / 2**30, 2),
+                    }
+                timed = sum(timing.values())
+                stats['timing'] = {
+                    name: round(value / timed, 3) if timed else 0
+                    for name, value in timing.items()
+                }
                 print(json.dumps(stats), flush=True)
                 last_log_time = now
                 last_log_frames = frames
+                timing = {name: 0.0 for name in timing}
 
             if frames >= next_checkpoint:
                 path = checkpoint_dir / f'r2d2-{frames:012d}.pt'

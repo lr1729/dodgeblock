@@ -11,8 +11,10 @@ from r2d2 import (  # noqa: E402
     PrioritizedSequenceReplay,
     RecurrentQNetwork,
     SequenceAssembler,
+    TokenEncoder,
     learn_batch,
     tensor_observation,
+    world_discounts,
 )
 from v2_bridge import ParallelEnvBridge  # noqa: E402
 
@@ -20,6 +22,7 @@ from v2_bridge import ParallelEnvBridge  # noqa: E402
 def main():
     bridge = ParallelEnvBridge(1, 2, 123, archive_probability=0)
     packet = bridge.read()
+    assert np.all(packet['world_scales'] == 1)
     assembler = SequenceAssembler(2, burn_in=4, unroll=8, n_step=3)
     assembler.initialize(packet)
     sequences = []
@@ -40,6 +43,7 @@ def main():
     for episode_return, height in terminal_returns:
         assert abs(episode_return - height / 40) < 1e-5
     for sequence in sequences:
+        assert np.all(sequence['world_scales'][sequence['valid'].astype(bool)] > 0)
         terminal = np.flatnonzero(sequence['dones'] * sequence['valid'])
         if len(terminal):
             last_valid = np.flatnonzero(sequence['valid'])[-1]
@@ -69,6 +73,18 @@ def main():
     quantiles, hidden = online(first)
     assert quantiles.shape == (2, 18, 11)
     assert hidden.shape == (1, 2, 64)
+
+    token_encoder = TokenEncoder(features=4, count=4, output=8, queries=2)
+    one = torch.zeros(1, 4, 4)
+    two = torch.zeros(1, 4, 4)
+    one[:, 0] = torch.tensor([0.2, 0.3, 0.4, 1.0])
+    two[:, :2] = torch.tensor([0.2, 0.3, 0.4, 1.0])
+    with torch.no_grad():
+        assert not torch.allclose(token_encoder(one), token_encoder(two))
+    scales = torch.tensor([1.0, 0.1])
+    discounts = world_discounts(0.99999, scales)
+    assert discounts[1] > discounts[0]
+    assert torch.isclose(discounts[1].pow(10), discounts[0], atol=1e-6)
     print('ok recurrent replay, terminal sequences, and score reward are valid')
 
 

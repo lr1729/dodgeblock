@@ -47,6 +47,12 @@ assert.equal(releaseWithoutSyntheticJump.focusReleased, true);
 assert.equal(releaseWithoutSyntheticJump.jumpPressed, false);
 assert.equal(heldActionInput(15, 0).down, true);
 
+const timeScaleSim = new Sim(8, { director: false, rules: { autoGuard: false, checkpoints: false } });
+const aimTransition = timeScaleSim.step(heldActionInput(13, 0));
+assert.equal(aimTransition.worldScale, 0.1, 'Focus Aim reports slowed world time');
+const dashTransition = timeScaleSim.step(heldActionInput(4, 13));
+assert.equal(dashTransition.worldScale, 0.55, 'Focus dash reports its world time');
+
 const v2sim = new Sim(7, { director: false, rules: { autoGuard: false, checkpoints: false } });
 const beam = v2sim.blocks.spawnAt(100, 0, 'beam');
 beam.yVel = 4;

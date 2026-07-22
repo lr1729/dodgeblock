@@ -220,3 +220,14 @@ Automated checks cannot establish fun. Playtests should record whether players
 can explain deaths, distinguish material danger and geometry at a glance,
 intentionally choose between Focus uses, cross between piles, and improve on
 repeated seeds.
+
+## Training Interface
+
+The browser and reinforcement-learning environment share the same `Sim` and
+fixed-step `step(input)` path. A step returns its effective world-time scale so
+long-horizon learning does not have to duplicate Focus timing rules. Training
+adapters may encode causal structured observations and snapshot stable states,
+but they must not implement separate movement, collision, storm, reward, or
+terminal logic. Hidden RNG state and unrevealed future drops are excluded from
+the policy observation even though the simulator is available to training
+tools.

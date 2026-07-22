@@ -27,6 +27,10 @@ def main():
         raise ValueError('--episodes must be divisible by --workers')
 
     device = torch.device(args.device)
+    torch.set_float32_matmul_precision('high')
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
     saved = torch.load(args.checkpoint, map_location=device, weights_only=False)
     config = saved.get('args', {})
     model = RecurrentQNetwork(config.get('hidden_size', 512), config.get('quantiles', 51)).to(device)

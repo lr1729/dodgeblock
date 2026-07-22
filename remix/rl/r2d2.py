@@ -38,9 +38,10 @@ class ResidualBlock(nn.Module):
 
 
 class TokenEncoder(nn.Module):
-    def __init__(self, features, output=128):
+    def __init__(self, features, count, output=128, queries=4):
         super().__init__()
         self.features = features
+        self.count = count
         self.token = nn.Sequential(
             nn.LayerNorm(features - 1),
             nn.Linear(features - 1, output),
@@ -48,16 +49,28 @@ class TokenEncoder(nn.Module):
             nn.Linear(output, output),
             nn.SiLU(),
         )
-        self.project = nn.Sequential(nn.Linear(output * 2, output), nn.SiLU())
+        self.queries = nn.Parameter(torch.empty(queries, output))
+        nn.init.normal_(self.queries, std=output ** -0.5)
+        self.project = nn.Sequential(
+            nn.Linear(output * (queries + 2) + 1, output),
+            nn.LayerNorm(output),
+            nn.SiLU(),
+        )
 
     def forward(self, values):
         mask = values[..., -1:] > 0
         encoded = self.token(values[..., :-1]) * mask
-        count = mask.sum(dim=-2).clamp_min(1)
-        mean = encoded.sum(dim=-2) / count
+        token_count = mask.sum(dim=-2)
+        mean = encoded.sum(dim=-2) / token_count.clamp_min(1)
         maximum = encoded.masked_fill(~mask, -torch.inf).amax(dim=-2)
         maximum = torch.where(torch.isfinite(maximum), maximum, torch.zeros_like(maximum))
-        return self.project(torch.cat((mean, maximum), dim=-1))
+        scores = torch.einsum('...nd,qd->...qn', encoded, self.queries) / math.sqrt(encoded.shape[-1])
+        scores = scores.masked_fill(~mask.squeeze(-1).unsqueeze(-2), -1e4)
+        attention = torch.softmax(scores, dim=-1) * mask.squeeze(-1).unsqueeze(-2)
+        attention = attention / attention.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        pooled = torch.einsum('...qn,...nd->...qd', attention, encoded).flatten(start_dim=-2)
+        density = token_count.to(encoded.dtype) / self.count
+        return self.project(torch.cat((mean, maximum, pooled, density), dim=-1))
 
 
 class RecurrentQNetwork(nn.Module):
@@ -85,8 +98,8 @@ class RecurrentQNetwork(nn.Module):
             nn.AdaptiveAvgPool1d(13), nn.Flatten(),
             nn.Linear(32 * 13, 64), nn.LayerNorm(64), nn.SiLU(),
         )
-        self.falling = TokenEncoder(FALLING_FEATURES)
-        self.forecasts = TokenEncoder(FORECAST_FEATURES)
+        self.falling = TokenEncoder(FALLING_FEATURES, FALLING_COUNT)
+        self.forecasts = TokenEncoder(FORECAST_FEATURES, FORECAST_COUNT)
         self.state = nn.Sequential(
             nn.LayerNorm(STATE_SIZE),
             nn.Linear(STATE_SIZE, 128), nn.SiLU(),
@@ -160,7 +173,7 @@ class SequenceAssembler:
 
     @staticmethod
     def _empty():
-        return {'observations': [], 'actions': [], 'rewards': [], 'dones': []}
+        return {'observations': [], 'actions': [], 'rewards': [], 'dones': [], 'world_scales': []}
 
     def initialize(self, packet):
         for index, buffer in enumerate(self.buffers):
@@ -175,6 +188,7 @@ class SequenceAssembler:
         actions = list(buffer['actions'])
         rewards = list(buffer['rewards'])
         dones = list(buffer['dones'])
+        world_scales = list(buffer['world_scales'])
         valid = [1] * len(actions)
 
         if padded and len(actions) < self.steps:
@@ -185,6 +199,7 @@ class SequenceAssembler:
                 actions = [0] * left + actions
                 rewards = [0.0] * left + rewards
                 dones = [1] * left + dones
+                world_scales = [1.0] * left + world_scales
                 valid = [0] * left + valid
             right = self.steps - len(actions)
             if right:
@@ -192,6 +207,7 @@ class SequenceAssembler:
                 actions += [0] * right
                 rewards += [0.0] * right
                 dones += [1] * right
+                world_scales += [1.0] * right
                 valid += [0] * right
 
         if len(actions) > self.steps:
@@ -200,6 +216,7 @@ class SequenceAssembler:
             actions = actions[start:]
             rewards = rewards[start:]
             dones = dones[start:]
+            world_scales = world_scales[start:]
             valid = valid[start:]
 
         assert len(actions) == self.steps
@@ -209,6 +226,7 @@ class SequenceAssembler:
             'actions': np.asarray(actions, np.uint8),
             'rewards': np.asarray(rewards, np.float32),
             'dones': np.asarray(dones, np.uint8),
+            'world_scales': np.asarray(world_scales, np.float32),
             'valid': np.asarray(valid, np.uint8),
         }
 
@@ -218,6 +236,7 @@ class SequenceAssembler:
             buffer['actions'].append(int(actions[index]))
             buffer['rewards'].append(float(packet['rewards'][index]))
             buffer['dones'].append(int(packet['dones'][index]))
+            buffer['world_scales'].append(float(packet['world_scales'][index]))
             buffer['observations'].append(copy_observation(packet, index))
 
             while len(buffer['actions']) >= self.steps:
@@ -226,9 +245,10 @@ class SequenceAssembler:
                     'actions': buffer['actions'][:self.steps],
                     'rewards': buffer['rewards'][:self.steps],
                     'dones': buffer['dones'][:self.steps],
+                    'world_scales': buffer['world_scales'][:self.steps],
                 }
                 completed.append(self._sequence(view))
-                for key in ('actions', 'rewards', 'dones'):
+                for key in ('actions', 'rewards', 'dones', 'world_scales'):
                     del buffer[key][:self.stride]
                 del buffer['observations'][:self.stride]
 
@@ -244,43 +264,66 @@ class PrioritizedSequenceReplay:
     def __init__(self, capacity, alpha=0.6):
         self.capacity = capacity
         self.alpha = alpha
-        self.data = []
+        self.observations = None
+        self.actions = None
+        self.rewards = None
+        self.dones = None
+        self.world_scales = None
+        self.valid = None
         self.priorities = np.zeros(capacity, np.float32)
         self.cursor = 0
+        self.size = 0
         self.max_priority = 1.0
 
     def __len__(self):
-        return len(self.data)
+        return self.size
+
+    def _allocate(self, sequence):
+        self.observations = {
+            key: np.empty(
+                (self.capacity, *values.shape),
+                dtype=np.float16 if np.issubdtype(values.dtype, np.floating) else values.dtype,
+            )
+            for key, values in sequence['observations'].items()
+        }
+        steps = sequence['actions'].shape
+        self.actions = np.empty((self.capacity, *steps), np.uint8)
+        self.rewards = np.empty((self.capacity, *steps), np.float16)
+        self.dones = np.empty((self.capacity, *steps), np.uint8)
+        self.world_scales = np.empty((self.capacity, *steps), np.float16)
+        self.valid = np.empty((self.capacity, *steps), np.uint8)
 
     def add(self, sequence, priority=None):
+        if self.observations is None:
+            self._allocate(sequence)
         priority = self.max_priority if priority is None else max(float(priority), 1e-4)
-        if len(self.data) < self.capacity:
-            self.data.append(sequence)
-            index = len(self.data) - 1
-        else:
-            index = self.cursor
-            self.data[index] = sequence
+        index = self.cursor
+        for key, values in sequence['observations'].items():
+            self.observations[key][index] = values
+        self.actions[index] = sequence['actions']
+        self.rewards[index] = sequence['rewards']
+        self.dones[index] = sequence['dones']
+        self.world_scales[index] = sequence['world_scales']
+        self.valid[index] = sequence['valid']
         self.priorities[index] = priority
-        self.cursor = (index + 1) % self.capacity
+        self.cursor = (self.cursor + 1) % self.capacity
+        self.size = min(self.capacity, self.size + 1)
         self.max_priority = max(self.max_priority, priority)
 
     def sample(self, batch_size, beta, rng):
-        size = len(self.data)
+        size = self.size
         scaled = np.power(self.priorities[:size].clip(min=1e-6), self.alpha)
         probabilities = scaled / scaled.sum()
         indices = rng.choice(size, batch_size, replace=size < batch_size, p=probabilities)
         weights = np.power(size * probabilities[indices], -beta)
         weights /= weights.max()
-        sequences = [self.data[index] for index in indices]
         batch = {
-            'observations': {
-                key: np.stack([sequence['observations'][key] for sequence in sequences])
-                for key in OBSERVATION_KEYS
-            },
-            'actions': np.stack([sequence['actions'] for sequence in sequences]),
-            'rewards': np.stack([sequence['rewards'] for sequence in sequences]),
-            'dones': np.stack([sequence['dones'] for sequence in sequences]),
-            'valid': np.stack([sequence['valid'] for sequence in sequences]),
+            'observations': {key: values[indices] for key, values in self.observations.items()},
+            'actions': self.actions[indices],
+            'rewards': self.rewards[indices],
+            'dones': self.dones[indices],
+            'world_scales': self.world_scales[indices],
+            'valid': self.valid[indices],
         }
         return indices, weights.astype(np.float32), batch
 
@@ -297,6 +340,10 @@ def tensor_observation(observation, device):
 
 def slice_observation(observation, start=None, end=None):
     return {key: value[:, start:end] for key, value in observation.items()}
+
+
+def world_discounts(gamma, world_scales):
+    return torch.pow(gamma, world_scales.float())
 
 
 def quantile_huber_loss(prediction, target, valid, weights, kappa=1.0):
@@ -330,6 +377,7 @@ def learn_batch(
     actions = torch.as_tensor(batch['actions'], device=device, dtype=torch.long)
     rewards = torch.as_tensor(batch['rewards'], device=device)
     dones = torch.as_tensor(batch['dones'], device=device, dtype=torch.float32)
+    world_scales = torch.as_tensor(batch['world_scales'], device=device, dtype=torch.float32)
     valid = torch.as_tensor(batch['valid'], device=device, dtype=torch.float32)
     weights = torch.as_tensor(importance_weights, device=device)
     autocast = torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp and device.type == 'cuda')
@@ -354,13 +402,14 @@ def learn_batch(
         with torch.no_grad():
             returns = torch.zeros_like(prediction)
             alive = torch.ones_like(rewards[:, burn_in:burn_in + unroll])
-            discount = 1.0
+            discount = torch.ones_like(alive)
             for offset in range(n_step):
                 step_rewards = rewards[:, burn_in + offset:burn_in + offset + unroll]
                 step_dones = dones[:, burn_in + offset:burn_in + offset + unroll]
+                step_scales = world_scales[:, burn_in + offset:burn_in + offset + unroll]
                 returns += (alive * discount * step_rewards).unsqueeze(-1)
                 alive *= 1 - step_dones
-                discount *= gamma
+                discount *= world_discounts(gamma, step_scales)
 
             bootstrap_online = online_quantiles[:, n_step:n_step + unroll].mean(dim=-1)
             bootstrap_actions = bootstrap_online.argmax(dim=-1)

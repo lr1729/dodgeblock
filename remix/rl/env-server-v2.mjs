@@ -28,7 +28,7 @@ const archiveCapacity = Math.max(1, numberArg('--archive-capacity', 2048));
 const checkpointHeight = Math.max(BLOCK_H, numberArg('--archive-height', 100));
 const rules = Object.freeze({ autoGuard: false, checkpoints: false });
 const observationBytes = observationByteSize();
-const statsBytes = count * (4 + 1 + 4 + 4 + 4 + 4 + 4 + 4);
+const statsBytes = count * (4 + 1 + 4 + 4 + 4 + 4 + 4 + 4 + 4);
 const packetBytes = count * observationBytes + statsBytes;
 const archive = [];
 const archiveFingerprints = new Set();
@@ -163,6 +163,7 @@ function writePacket(
   lengths = null,
   heights = null,
   episodeStarts = null,
+  worldScales = null,
 ) {
   const packet = Buffer.allocUnsafe(packetBytes);
   const terrainOffset = 0;
@@ -198,6 +199,8 @@ function writePacket(
   for (let index = 0; index < count; index++) packet.writeFloatLE(envs[index].startHeight, offset + index * 4);
   offset += count * 4;
   for (let index = 0; index < count; index++) packet.writeFloatLE(envs[index].sim.height, offset + index * 4);
+  offset += count * 4;
+  for (let index = 0; index < count; index++) packet.writeFloatLE(worldScales?.[index] ?? 1, offset + index * 4);
   process.stdout.write(packet);
 }
 
@@ -208,11 +211,13 @@ function step(actions) {
   const lengths = new Uint32Array(count);
   const heights = new Float32Array(count);
   const episodeStarts = new Float32Array(count);
+  const worldScales = new Float32Array(count);
   for (let index = 0; index < count; index++) {
     const entry = envs[index];
     const beforeHeight = entry.sim.height;
     const action = Math.min(ACTION_COUNT - 1, actions[index]);
-    entry.sim.step(heldActionInput(action, entry.previousAction));
+    const transition = entry.sim.step(heldActionInput(action, entry.previousAction));
+    worldScales[index] = transition.worldScale;
     entry.previousAction = action;
     const reward = Math.max(0, entry.sim.height - beforeHeight) / BLOCK_H;
     entry.episodeReturn += reward;
@@ -227,7 +232,7 @@ function step(actions) {
     episodeStarts[index] = entry.startHeight;
     reset(entry, index);
   }
-  writePacket(rewards, dones, returns, lengths, heights, episodeStarts);
+  writePacket(rewards, dones, returns, lengths, heights, episodeStarts, worldScales);
 }
 
 writePacket();

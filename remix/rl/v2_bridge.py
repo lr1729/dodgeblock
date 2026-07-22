@@ -32,7 +32,7 @@ class EnvWorker:
             (FALLING_COUNT * FALLING_FEATURES +
              FORECAST_COUNT * FORECAST_FEATURES + STATE_SIZE) * 4
         )
-        self.packet_size = count * self.observation_bytes + count * (4 + 1 + 4 + 4 + 4 + 4 + 4 + 4)
+        self.packet_size = count * self.observation_bytes + count * (4 + 1 + 4 + 4 + 4 + 4 + 4 + 4 + 4)
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
     def _read_exact(self):
@@ -88,6 +88,8 @@ class EnvWorker:
         start_heights = np.frombuffer(data, '<f4', count, offset).copy()
         offset += count * 4
         current_heights = np.frombuffer(data, '<f4', count, offset).copy()
+        offset += count * 4
+        world_scales = np.frombuffer(data, '<f4', count, offset).copy()
 
         return {
             'terrain': terrain,
@@ -103,6 +105,7 @@ class EnvWorker:
             'episode_starts': episode_starts,
             'start_heights': start_heights,
             'current_heights': current_heights,
+            'world_scales': world_scales,
         }
 
     def send(self, actions):

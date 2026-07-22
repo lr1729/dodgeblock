@@ -162,7 +162,7 @@ export class Sim {
   }
 
   step(inp = NEUTRAL_INPUT) {
-    if (this.dead) return;
+    if (this.dead) return { worldScale: 0 };
     this.frame++;
     const p = this.player;
     const wasAirborne = p.offGround > COYOTE_FRAMES;
@@ -212,7 +212,7 @@ export class Sim {
     this.resolveIncomingBlockMotion();
     if (this.dead) {
       this.events.emit('death', { cause: this.deathCause });
-      return;
+      return { worldScale };
     }
     if (p.focusTimer > 0) {
       this.updateFocus();
@@ -240,6 +240,7 @@ export class Sim {
 
     if (p.y > -this.camY + GAME_H) this.kill('fell');
     if (this.dead) this.events.emit('death', { cause: this.deathCause });
+    return { worldScale };
   }
 
   directionFromInput(inp) {
