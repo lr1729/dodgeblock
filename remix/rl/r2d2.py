@@ -78,9 +78,9 @@ class RecurrentQNetwork(nn.Module):
         super().__init__()
         self.hidden_size = hidden_size
         self.quantiles = quantiles
-        self.terrain_embedding = nn.Embedding(64, 8)
+        self.terrain_material = nn.Embedding(4, 8)
         self.terrain = nn.Sequential(
-            nn.Conv2d(8, 32, 3, padding=1),
+            nn.Conv2d(15, 32, 3, padding=1),
             ResidualBlock(32),
             nn.Conv2d(32, 64, 3, stride=(2, 2), padding=1),
             ResidualBlock(64),
@@ -129,9 +129,19 @@ class RecurrentQNetwork(nn.Module):
         batch, steps = terrain.shape[:2]
         flat = batch * steps
 
-        terrain = self.terrain_embedding(terrain.long()).permute(0, 1, 4, 2, 3).reshape(
-            flat, 8, TERRAIN_ROWS, TERRAIN_COLS,
-        )
+        terrain_codes = terrain.long()
+        material = self.terrain_material(terrain_codes & 3)
+        terrain_flags = torch.stack((
+            (terrain_codes >> 2) & 1,
+            (terrain_codes >> 3) & 1,
+            (terrain_codes >> 4) & 1,
+            (terrain_codes >> 5) & 1,
+            (terrain_codes >> 6) & 1,
+            (terrain_codes >> 7) & 1,
+            ((terrain_codes >> 8) & 15) / 15,
+        ), dim=-1).to(material.dtype)
+        terrain = torch.cat((material, terrain_flags), dim=-1)
+        terrain = terrain.permute(0, 1, 4, 2, 3).reshape(flat, 15, TERRAIN_ROWS, TERRAIN_COLS)
         skyline = (observation['skyline'].float().reshape(flat, 1, SKYLINE_SIZE) - 128) / 16
         falling = observation['falling'].float().reshape(flat, FALLING_COUNT, FALLING_FEATURES)
         forecasts = observation['forecasts'].float().reshape(flat, FORECAST_COUNT, FORECAST_FEATURES)

@@ -12,6 +12,13 @@ from v2_bridge import ParallelEnvBridge
 OBSERVATION_KEYS = ('terrain', 'skyline', 'falling', 'forecasts', 'state')
 
 
+def bootstrap_interval(values, statistic, rng, samples=2_000):
+    indices = rng.integers(0, len(values), size=(samples, len(values)))
+    estimates = np.asarray([statistic(values[index]) for index in indices])
+    low, high = np.percentile(estimates, (2.5, 97.5))
+    return [round(float(low), 2), round(float(high), 2)]
+
+
 def main():
     parser = argparse.ArgumentParser(description='Evaluate a DodgeBlock v2 policy on held-out seeds.')
     parser.add_argument('checkpoint')
@@ -76,14 +83,17 @@ def main():
     finally:
         bridge.close()
 
+    bootstrap_rng = np.random.default_rng(args.seed ^ 0xB0057A9)
     result = {
         'checkpoint': args.checkpoint,
         'training_frames': int(saved.get('frames', 0)),
         'episodes': args.episodes,
         'seed': args.seed,
         'mean_height': round(float(heights.mean()), 2),
+        'mean_height_ci95': bootstrap_interval(heights, np.mean, bootstrap_rng),
         'median_height': round(float(np.median(heights)), 2),
         'iqm_height': round(interquartile_mean(heights), 2),
+        'iqm_height_ci95': bootstrap_interval(heights, interquartile_mean, bootstrap_rng),
         'p90_height': round(float(np.percentile(heights, 90)), 2),
         'max_height': round(float(heights.max()), 2),
         'mean_length': round(float(lengths.mean()), 2),

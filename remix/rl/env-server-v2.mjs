@@ -167,7 +167,7 @@ function writePacket(
 ) {
   const packet = Buffer.allocUnsafe(packetBytes);
   const terrainOffset = 0;
-  const skylineOffset = terrainOffset + count * TERRAIN_SIZE;
+  const skylineOffset = terrainOffset + count * TERRAIN_SIZE * 2;
   const fallingOffset = skylineOffset + count * SKYLINE_SIZE;
   const fallingBytes = FALLING_COUNT * FALLING_FEATURES * 4;
   const forecastOffset = fallingOffset + count * fallingBytes;
@@ -177,7 +177,7 @@ function writePacket(
   for (let index = 0; index < envs.length; index++) {
     const entry = envs[index];
     const observation = encodeObservation(entry.sim, entry, entry.observation);
-    Buffer.from(observation.terrain.buffer).copy(packet, terrainOffset + index * TERRAIN_SIZE);
+    Buffer.from(observation.terrain.buffer).copy(packet, terrainOffset + index * TERRAIN_SIZE * 2);
     Buffer.from(observation.skyline.buffer).copy(packet, skylineOffset + index * SKYLINE_SIZE);
     copyFloatArray(packet, observation.falling, fallingOffset + index * fallingBytes);
     copyFloatArray(packet, observation.forecasts, forecastOffset + index * forecastBytes);

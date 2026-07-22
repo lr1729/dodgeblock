@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { ARENA_X } from '../src/constants.js';
 import { Sim } from '../src/sim/sim.js';
 import { BLOCK_TYPES } from '../src/sim/blockTypes.js';
 import { ACTION_COUNT, OBS_SIZE, STATE_SIZE, actionInput, encodeObservation } from '../rl/env.mjs';
@@ -7,6 +8,11 @@ import {
   FALLING_FEATURES,
   FORECAST_FEATURES,
   STATE_SIZE as STATE_SIZE_V2,
+  TERRAIN_COLS,
+  TERRAIN_EDGE_LEFT,
+  TERRAIN_EDGE_RIGHT,
+  TERRAIN_FAULT_LEVELS,
+  TERRAIN_FAULT_SHIFT,
   TERRAIN_SIZE,
   createObservation as createObservationV2,
   encodeObservation as encodeObservationV2,
@@ -75,4 +81,32 @@ const encoded10k = v2.state[20];
 v2sim.height = 20_000;
 encodeObservationV2(v2sim, { previousAction: 0 }, v2);
 assert.ok(v2.state[20] > encoded10k, 'height encoding must remain unsaturated beyond 10k');
+
+const terrainSim = new Sim(11, { director: false, rules: { autoGuard: false, checkpoints: false } });
+const lower = terrainSim.blocks.spawnAt(ARENA_X, 0, 'wood');
+terrainSim.blocks.fixAt(lower, 1);
+const upper = terrainSim.blocks.spawnAt(ARENA_X, 0, 'gravel');
+terrainSim.blocks.fixAt(upper, 2);
+lower.faultTimer = 12;
+lower.faultDuration = 12;
+const terrainObservation = encodeObservationV2(
+  terrainSim,
+  { previousAction: 0 },
+  createObservationV2(),
+);
+const occupiedRows = [];
+for (let row = 0; row < terrainObservation.terrain.length / TERRAIN_COLS; row++) {
+  const cell = terrainObservation.terrain[row * TERRAIN_COLS];
+  if ((cell & 3) !== 0) occupiedRows.push({ row, cell });
+}
+assert.equal(occupiedRows.length, 2, 'each one-layer block occupies exactly one terrain row');
+assert.deepEqual(occupiedRows.map(({ cell }) => cell & 3), [2, 1]);
+assert.ok(occupiedRows.every(({ cell }) => (cell & TERRAIN_EDGE_LEFT) !== 0));
+assert.ok(occupiedRows.every(({ cell }) => (cell & TERRAIN_EDGE_RIGHT) === 0));
+const lowerCell = occupiedRows[1].cell;
+assert.equal(
+  (lowerCell >> TERRAIN_FAULT_SHIFT) & TERRAIN_FAULT_LEVELS,
+  TERRAIN_FAULT_LEVELS,
+  'terrain exposes the remaining collapse warning time',
+);
 console.log('ok RL observations and action mapping are valid');

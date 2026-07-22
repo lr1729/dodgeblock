@@ -28,7 +28,7 @@ class EnvWorker:
         ]
         self.count = count
         self.observation_bytes = (
-            TERRAIN_SIZE + SKYLINE_SIZE +
+            TERRAIN_SIZE * 2 + SKYLINE_SIZE +
             (FALLING_COUNT * FALLING_FEATURES +
              FORECAST_COUNT * FORECAST_FEATURES + STATE_SIZE) * 4
         )
@@ -51,9 +51,9 @@ class EnvWorker:
         count = self.count
         offset = 0
 
-        terrain = np.frombuffer(data, np.uint8, count * TERRAIN_SIZE, offset)
+        terrain = np.frombuffer(data, '<u2', count * TERRAIN_SIZE, offset)
         terrain = terrain.reshape(count, TERRAIN_ROWS, TERRAIN_COLS).copy()
-        offset += count * TERRAIN_SIZE
+        offset += count * TERRAIN_SIZE * 2
 
         skyline = np.frombuffer(data, np.uint8, count * SKYLINE_SIZE, offset)
         skyline = skyline.reshape(count, SKYLINE_SIZE).copy()

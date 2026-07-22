@@ -30,6 +30,10 @@ export const FORECAST_FEATURES = 10;
 export const STATE_SIZE = 32;
 
 const TERRAIN_ABOVE_ROWS = 13;
+export const TERRAIN_EDGE_LEFT = 1 << 6;
+export const TERRAIN_EDGE_RIGHT = 1 << 7;
+export const TERRAIN_FAULT_SHIFT = 8;
+export const TERRAIN_FAULT_LEVELS = 15;
 const MATERIAL_CODE = Object.freeze({ wood: 1, gravel: 2, beam: 3 });
 const MATERIAL_VECTOR = Object.freeze({
   wood: [1, 0, 0],
@@ -73,12 +77,12 @@ function materialVector(type) {
 }
 
 function terrainViewTop(sim) {
-  const playerScreenY = sim.player.y + sim.camY;
-  const playerRow = Math.floor(playerScreenY / BLOCK_H);
-  return (playerRow - TERRAIN_ABOVE_ROWS) * BLOCK_H - sim.camY;
+  const playerLayer = Math.floor((GROUND.y - (sim.player.y + sim.player.h)) / BLOCK_H);
+  const topLayer = playerLayer + TERRAIN_ABOVE_ROWS;
+  return GROUND.y - topLayer * BLOCK_H;
 }
 
-function fillTerrain(terrain, block, viewTop, flags) {
+function fillTerrain(terrain, block, viewTop, flags, boundaries = false) {
   const col0 = Math.max(0, Math.floor((block.x - ARENA_X) / SPAWN_GRID));
   const col1 = Math.min(
     TERRAIN_COLS - 1,
@@ -93,7 +97,10 @@ function fillTerrain(terrain, block, viewTop, flags) {
   for (let row = row0; row <= row1; row++) {
     for (let col = col0; col <= col1; col++) {
       const index = row * TERRAIN_COLS + col;
-      terrain[index] |= flags;
+      let cellFlags = flags;
+      if (boundaries && col === col0) cellFlags |= TERRAIN_EDGE_LEFT;
+      if (boundaries && col === col1) cellFlags |= TERRAIN_EDGE_RIGHT;
+      terrain[index] |= cellFlags;
     }
   }
 }
@@ -115,10 +122,17 @@ function encodeTerrain(sim, terrain) {
   for (const block of sim.blocks.blocks) {
     if (!block.fixed) continue;
     let flags = MATERIAL_CODE[block.type] ?? 0;
-    if (block.faultTimer > 0) flags |= 1 << 2;
+    if (block.faultTimer > 0) {
+      flags |= 1 << 2;
+      const remaining = block.faultDuration > 0 ? block.faultTimer / block.faultDuration : 0;
+      const level = Math.max(1, Math.min(TERRAIN_FAULT_LEVELS, Math.round(
+        remaining * TERRAIN_FAULT_LEVELS,
+      )));
+      flags |= level << TERRAIN_FAULT_SHIFT;
+    }
     if (preview.branch.has(block)) flags |= 1 << 3;
     if (preview.target === block) flags |= 1 << 4;
-    fillTerrain(terrain, block, viewTop, flags);
+    fillTerrain(terrain, block, viewTop, flags, true);
   }
   fillTerrain(terrain, sim.player, viewTop, 1 << 5);
   return viewTop;
@@ -237,7 +251,7 @@ function encodeState(sim, state, controller, overflow) {
 
 export function createObservation() {
   return {
-    terrain: new Uint8Array(TERRAIN_SIZE),
+    terrain: new Uint16Array(TERRAIN_SIZE),
     skyline: new Uint8Array(SKYLINE_SIZE),
     falling: new Float32Array(FALLING_COUNT * FALLING_FEATURES),
     forecasts: new Float32Array(FORECAST_COUNT * FORECAST_FEATURES),
@@ -257,6 +271,6 @@ export function encodeObservation(sim, controller, observation = createObservati
 }
 
 export function observationByteSize() {
-  return TERRAIN_SIZE + SKYLINE_SIZE +
+  return TERRAIN_SIZE * 2 + SKYLINE_SIZE +
     (FALLING_COUNT * FALLING_FEATURES + FORECAST_COUNT * FORECAST_FEATURES + STATE_SIZE) * 4;
 }

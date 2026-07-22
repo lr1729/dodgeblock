@@ -16,8 +16,13 @@ The training contract intentionally differs from assisted browser play:
 - Observations contain causal structured geometry, warning countdowns, stacked
   forecasts, control state, and Focus state, but never the RNG or unrevealed
   future drops.
-- Falling-block and forecast tokens use count-aware learned attention. This
-  preserves multiplicity and interactions that mean/max set pooling loses.
+- Fixed terrain is aligned to the authoritative block lattice. Material,
+  exact horizontal block edges, collapse-branch/target state, player occupancy,
+  and normalized collapse time are separate learned channels rather than an
+  aliased screen-space raster or a precomputed carve answer.
+- Falling-block and forecast tokens use count-aware learned-query pooling. This
+  preserves multiplicity and several complementary learned summaries; it is
+  intentionally lighter than full pairwise token self-attention.
 - Discounting follows simulation world time rather than controller ticks.
   Focus Aim therefore incurs one tenth of the ordinary temporal discount, just
   as it advances the physical world at one tenth speed. The production gamma
@@ -35,7 +40,7 @@ The training contract intentionally differs from assisted browser play:
 
 ```bash
 python rl/train_v2.py --device cuda --workers 8 --envs-per-worker 64
-python rl/evaluate_v2.py ~/dodgeblock-r2d2/checkpoints/latest.pt
+python rl/evaluate_v2.py ~/dodgeblock-r2d2/checkpoints/latest.pt --episodes 256
 ```
 
 Checkpoints include both Q networks, optimizer state, frame count, and the full
