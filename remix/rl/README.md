@@ -5,8 +5,9 @@
 The v2 trainer is the primary experiment. It is an R2D2-style recurrent,
 dueling, distributional Double-Q agent with prioritized sequence replay. It
 uses the authoritative deterministic JavaScript simulation and trains only on
-stable height gained. There is no survival, death, near-miss, material, action,
-or danger shaping.
+stable height gained, with a one-block terminal penalty to anchor death as a
+bad terminal boundary for bootstrapping. There is no survival, near-miss,
+material, action, or danger shaping.
 
 The training contract intentionally differs from assisted browser play:
 
@@ -41,6 +42,12 @@ The training contract intentionally differs from assisted browser play:
   coherent movement bursts without reducing the greedy policy's 60 Hz control.
   Actor exploration and replay sampling use independent RNG streams so replay
   ablations do not silently change the behavior-noise sequence.
+- Fresh runs start with random valid actions and delayed learning. This avoids
+  training the Q head against mostly unterminated, zero-reward fragments from a
+  randomly initialized policy.
+- The value and advantage output heads are zero-initialized, so early greedy
+  preferences come from evidence in replay rather than arbitrary final-layer
+  initialization.
 - Replay stores contiguous float observations in half precision. The default
   32,768 sequences cover about 2.6 million non-overlapping transitions while
   remaining in host RAM; simulator state and reward calculation remain full

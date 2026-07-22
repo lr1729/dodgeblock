@@ -19,12 +19,13 @@ STATE_SIZE = 32
 
 
 class EnvWorker:
-    def __init__(self, count, seed, archive_probability=0.0, archive_capacity=2048):
+    def __init__(self, count, seed, archive_probability=0.0, archive_capacity=2048, death_penalty=1.0):
         server = Path(__file__).with_name('env-server-v2.mjs')
         command = [
             'node', str(server), '--envs', str(count), '--seed', str(seed),
             '--archive-probability', str(archive_probability),
             '--archive-capacity', str(archive_capacity),
+            '--death-penalty', str(death_penalty),
         ]
         self.count = count
         self.observation_bytes = (
@@ -123,13 +124,22 @@ class EnvWorker:
 
 
 class ParallelEnvBridge:
-    def __init__(self, workers, envs_per_worker, seed, archive_probability=0.0, archive_capacity=2048):
+    def __init__(
+        self,
+        workers,
+        envs_per_worker,
+        seed,
+        archive_probability=0.0,
+        archive_capacity=2048,
+        death_penalty=1.0,
+    ):
         self.workers = [
             EnvWorker(
                 envs_per_worker,
                 seed + index * 0x1F123BB5,
                 archive_probability,
                 archive_capacity,
+                death_penalty,
             )
             for index in range(workers)
         ]

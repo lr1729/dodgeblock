@@ -18,6 +18,7 @@ from r2d2 import (
     exploration_rates,
     greedy_actions,
     learn_batch,
+    sample_valid_actions,
     tensor_observation,
 )
 from v2_bridge import ParallelEnvBridge
@@ -47,8 +48,13 @@ def arguments():
     parser.add_argument('--weight-decay', type=float, default=1e-5)
     parser.add_argument('--target-tau', type=float, default=0.002)
     parser.add_argument('--exploration-hold', type=int, default=4)
+    parser.add_argument('--epsilon-max', type=float, default=0.6)
+    parser.add_argument('--epsilon-min', type=float, default=0.02)
+    parser.add_argument('--random-warmup-frames', type=int, default=1_000_000)
+    parser.add_argument('--learning-start-frames', type=int, default=1_000_000)
     parser.add_argument('--archive-probability', type=float, default=0.25)
     parser.add_argument('--archive-capacity', type=int, default=2048)
+    parser.add_argument('--death-penalty', type=float, default=1.0)
     parser.add_argument('--checkpoint-dir', default=str(Path.home() / 'dodgeblock-r2d2/checkpoints'))
     parser.add_argument('--checkpoint-interval', type=int, default=10_000_000)
     parser.add_argument('--log-interval', type=float, default=20.0)
@@ -130,12 +136,13 @@ def main():
         args.seed,
         archive_probability=args.archive_probability,
         archive_capacity=args.archive_capacity,
+        death_penalty=args.death_penalty,
     )
     assembler = SequenceAssembler(env_count, args.burn_in, args.unroll, args.n_step)
     replay = PrioritizedSequenceReplay(args.replay_capacity, args.priority_alpha)
     replay_rng = np.random.default_rng(args.seed ^ 0x5EED5EED)
     actor_rng = np.random.default_rng(args.seed ^ 0xAC710)
-    epsilons = exploration_rates(env_count)
+    epsilons = exploration_rates(env_count, args.epsilon_max, args.epsilon_min)
     explorer = PersistentEpsilonExplorer(epsilons, args.exploration_hold, actor_rng)
     fresh_episodes = deque(maxlen=500)
     curriculum_episodes = deque(maxlen=500)
@@ -178,6 +185,11 @@ def main():
         'n_step': args.n_step,
         'replay_capacity': args.replay_capacity,
         'exploration_hold': args.exploration_hold,
+        'epsilon_max': args.epsilon_max,
+        'epsilon_min': args.epsilon_min,
+        'random_warmup_frames': args.random_warmup_frames,
+        'learning_start_frames': args.learning_start_frames,
+        'death_penalty': args.death_penalty,
         'compiled': args.compile,
     }), flush=True)
 
@@ -185,18 +197,21 @@ def main():
         while frames < args.total_frames and not stop:
             phase_started = time.perf_counter()
             online.eval()
-            observation = tensor_observation({
-                key: packet[key] for key in ('terrain', 'skyline', 'falling', 'forecasts', 'state')
-            }, device)
-            with torch.inference_mode(), torch.autocast(
-                device_type=device.type,
-                dtype=torch.bfloat16,
-                enabled=amp and device.type == 'cuda',
-            ):
-                quantiles, hidden = online(observation, hidden)
-                greedy = greedy_actions(quantiles, observation).cpu().numpy()
+            if frames < args.random_warmup_frames:
+                actions = sample_valid_actions(packet['state'], actor_rng)
+            else:
+                observation = tensor_observation({
+                    key: packet[key] for key in ('terrain', 'skyline', 'falling', 'forecasts', 'state')
+                }, device)
+                with torch.inference_mode(), torch.autocast(
+                    device_type=device.type,
+                    dtype=torch.bfloat16,
+                    enabled=amp and device.type == 'cuda',
+                ):
+                    quantiles, hidden = online(observation, hidden)
+                    greedy = greedy_actions(quantiles, observation).cpu().numpy()
+                actions = explorer.select(greedy, packet['state'])
             timing['inference'] += time.perf_counter() - phase_started
-            actions = explorer.select(greedy, packet['state'])
             phase_started = time.perf_counter()
             packet = bridge.step(actions)
             explorer.reset(packet['dones'])
@@ -218,7 +233,7 @@ def main():
                 replay.add(sequence)
             timing['assembly'] += time.perf_counter() - phase_started
 
-            if len(replay) >= args.minimum_replay:
+            if len(replay) >= args.minimum_replay and frames >= args.learning_start_frames:
                 update_budget += env_count * args.replay_ratio / (args.batch_size * args.unroll)
                 while update_budget >= 1:
                     progress = min(1.0, frames / max(1, args.total_frames))

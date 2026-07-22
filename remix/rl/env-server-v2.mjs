@@ -26,6 +26,7 @@ const baseSeed = numberArg('--seed', 1) >>> 0;
 const archiveProbability = Math.max(0, Math.min(1, numberArg('--archive-probability', 0)));
 const archiveCapacity = Math.max(1, numberArg('--archive-capacity', 2048));
 const checkpointHeight = Math.max(BLOCK_H, numberArg('--archive-height', 100));
+const deathPenalty = Math.max(0, numberArg('--death-penalty', 1));
 const rules = Object.freeze({ autoGuard: false, checkpoints: false });
 const observationBytes = observationByteSize();
 const statsBytes = count * (4 + 1 + 4 + 4 + 4 + 4 + 4 + 4 + 4);
@@ -219,7 +220,8 @@ function step(actions) {
     const transition = entry.sim.step(heldActionInput(action, entry.previousAction));
     worldScales[index] = transition.worldScale;
     entry.previousAction = action;
-    const reward = Math.max(0, entry.sim.height - beforeHeight) / BLOCK_H;
+    const reward = Math.max(0, entry.sim.height - beforeHeight) / BLOCK_H -
+      (entry.sim.dead ? deathPenalty : 0);
     entry.episodeReturn += reward;
     entry.episodeLength++;
     rewards[index] = reward;

@@ -22,6 +22,11 @@ args=(
   --minimum-replay "${DODGEBLOCK_MINIMUM_REPLAY:-1024}"
   --replay-ratio "${DODGEBLOCK_REPLAY_RATIO:-2.0}"
   --exploration-hold "${DODGEBLOCK_EXPLORATION_HOLD:-4}"
+  --epsilon-max "${DODGEBLOCK_EPSILON_MAX:-0.6}"
+  --epsilon-min "${DODGEBLOCK_EPSILON_MIN:-0.02}"
+  --random-warmup-frames "${DODGEBLOCK_RANDOM_WARMUP_FRAMES:-1000000}"
+  --learning-start-frames "${DODGEBLOCK_LEARNING_START_FRAMES:-1000000}"
+  --death-penalty "${DODGEBLOCK_DEATH_PENALTY:-1.0}"
 )
 
 if [[ -e "$checkpoint_dir/latest.pt" ]]; then

@@ -67,8 +67,8 @@ export function heldActionInput(action, previousAction = 0) {
     focusPressed: held.focus && !previous.focus,
     focusReleased: !held.focus && previous.focus,
     focusHeld: held.focus,
-    focusDirX: 0,
-    focusDirY: 0,
+    focusDirX: held.focus ? held.horizontal : 0,
+    focusDirY: held.focus ? held.vertical : 0,
   };
 }
 

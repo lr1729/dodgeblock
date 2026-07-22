@@ -43,6 +43,8 @@ assert.equal(focusUpLeft.focusHeld, true);
 assert.equal(focusUpLeft.focusPressed, true);
 assert.equal(focusUpLeft.left, true);
 assert.equal(focusUpLeft.up, true);
+assert.equal(focusUpLeft.focusDirX, -1);
+assert.equal(focusUpLeft.focusDirY, -1);
 assert.equal(focusUpLeft.jumpPressed, true);
 const heldFocus = heldActionInput(13, 13);
 assert.equal(heldFocus.focusPressed, false);

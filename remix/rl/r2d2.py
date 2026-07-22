@@ -195,6 +195,9 @@ class RecurrentQNetwork(nn.Module):
             nn.Linear(hidden_size, hidden_size), nn.SiLU(),
             nn.Linear(hidden_size, ACTION_COUNT * quantiles),
         )
+        for head in (self.value[-1], self.advantage[-1]):
+            nn.init.zeros_(head.weight)
+            nn.init.zeros_(head.bias)
 
     def initial_hidden(self, batch, device=None):
         return torch.zeros(1, batch, self.hidden_size, device=device)
@@ -538,11 +541,17 @@ def ema_update(target, online, tau):
         target_parameter.lerp_(online_parameter, tau)
 
 
-def exploration_rates(count):
+def exploration_rates(count, maximum=0.6, minimum=0.02):
+    if not 0 <= minimum <= maximum <= 1:
+        raise ValueError('epsilon range must satisfy 0 <= min <= max <= 1')
     if count == 1:
-        return np.zeros(1, np.float32)
+        return np.asarray([maximum], np.float32)
+    if maximum == 0:
+        return np.zeros(count, np.float32)
+    if minimum == 0:
+        minimum = maximum * 1e-4
     indices = np.arange(count, dtype=np.float32)
-    return np.power(0.4, 1 + 7 * indices / (count - 1)).astype(np.float32)
+    return (maximum * np.power(minimum / maximum, indices / (count - 1))).astype(np.float32)
 
 
 def interquartile_mean(values):
