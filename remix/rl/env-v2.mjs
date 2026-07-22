@@ -33,7 +33,7 @@ const TERRAIN_ABOVE_ROWS = 13;
 export const TERRAIN_EDGE_LEFT = 1 << 6;
 export const TERRAIN_EDGE_RIGHT = 1 << 7;
 export const TERRAIN_FAULT_SHIFT = 8;
-export const TERRAIN_FAULT_LEVELS = 15;
+export const TERRAIN_FAULT_MAX = 255;
 const MATERIAL_CODE = Object.freeze({ wood: 1, gravel: 2, beam: 3 });
 const MATERIAL_VECTOR = Object.freeze({
   wood: [1, 0, 0],
@@ -124,11 +124,8 @@ function encodeTerrain(sim, terrain) {
     let flags = MATERIAL_CODE[block.type] ?? 0;
     if (block.faultTimer > 0) {
       flags |= 1 << 2;
-      const remaining = block.faultDuration > 0 ? block.faultTimer / block.faultDuration : 0;
-      const level = Math.max(1, Math.min(TERRAIN_FAULT_LEVELS, Math.round(
-        remaining * TERRAIN_FAULT_LEVELS,
-      )));
-      flags |= level << TERRAIN_FAULT_SHIFT;
+      const remaining = Math.max(1, Math.min(TERRAIN_FAULT_MAX, Math.ceil(block.faultTimer)));
+      flags |= remaining << TERRAIN_FAULT_SHIFT;
     }
     if (preview.branch.has(block)) flags |= 1 << 3;
     if (preview.target === block) flags |= 1 << 4;

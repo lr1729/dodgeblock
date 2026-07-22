@@ -18,7 +18,7 @@ The training contract intentionally differs from assisted browser play:
   future drops.
 - Fixed terrain is aligned to the authoritative block lattice. Material,
   exact horizontal block edges, collapse-branch/target state, player occupancy,
-  and normalized collapse time are separate learned channels rather than an
+  and absolute remaining collapse time are separate learned channels rather than an
   aliased screen-space raster or a precomputed carve answer.
 - Falling-block and forecast tokens use count-aware learned-query pooling. This
   preserves multiplicity and several complementary learned summaries; it is

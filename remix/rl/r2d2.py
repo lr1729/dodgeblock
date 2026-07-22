@@ -138,7 +138,7 @@ class RecurrentQNetwork(nn.Module):
             (terrain_codes >> 5) & 1,
             (terrain_codes >> 6) & 1,
             (terrain_codes >> 7) & 1,
-            ((terrain_codes >> 8) & 15) / 15,
+            (((terrain_codes >> 8) & 255) / 60).clamp(max=1),
         ), dim=-1).to(material.dtype)
         terrain = torch.cat((material, terrain_flags), dim=-1)
         terrain = terrain.permute(0, 1, 4, 2, 3).reshape(flat, 15, TERRAIN_ROWS, TERRAIN_COLS)

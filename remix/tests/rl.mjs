@@ -11,7 +11,6 @@ import {
   TERRAIN_COLS,
   TERRAIN_EDGE_LEFT,
   TERRAIN_EDGE_RIGHT,
-  TERRAIN_FAULT_LEVELS,
   TERRAIN_FAULT_SHIFT,
   TERRAIN_SIZE,
   createObservation as createObservationV2,
@@ -103,10 +102,11 @@ assert.equal(occupiedRows.length, 2, 'each one-layer block occupies exactly one 
 assert.deepEqual(occupiedRows.map(({ cell }) => cell & 3), [2, 1]);
 assert.ok(occupiedRows.every(({ cell }) => (cell & TERRAIN_EDGE_LEFT) !== 0));
 assert.ok(occupiedRows.every(({ cell }) => (cell & TERRAIN_EDGE_RIGHT) === 0));
+assert.ok((terrainObservation.terrain[occupiedRows[0].row * TERRAIN_COLS + 3] & TERRAIN_EDGE_RIGHT) !== 0);
 const lowerCell = occupiedRows[1].cell;
 assert.equal(
-  (lowerCell >> TERRAIN_FAULT_SHIFT) & TERRAIN_FAULT_LEVELS,
-  TERRAIN_FAULT_LEVELS,
-  'terrain exposes the remaining collapse warning time',
+  (lowerCell >> TERRAIN_FAULT_SHIFT) & 255,
+  12,
+  'terrain exposes absolute remaining collapse warning time',
 );
 console.log('ok RL observations and action mapping are valid');
