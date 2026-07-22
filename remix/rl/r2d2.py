@@ -19,6 +19,48 @@ from v2_bridge import (
 
 
 OBSERVATION_KEYS = ('terrain', 'skyline', 'falling', 'forecasts', 'state')
+FOCUS_CHARGE_STATE = 10
+FOCUS_AIM_STATE = 12
+FOCUS_DASH_STATE = 14
+FOCUS_HELD_STATE = 19
+
+
+def valid_action_mask(observation):
+    state = observation['state']
+    mask = torch.ones((*state.shape[:-1], ACTION_COUNT), dtype=torch.bool, device=state.device)
+    aiming = state[..., FOCUS_AIM_STATE] > 0
+    can_press_focus = (
+        (state[..., FOCUS_CHARGE_STATE] > 0) &
+        (state[..., FOCUS_DASH_STATE] <= 0) &
+        (state[..., FOCUS_HELD_STATE] <= 0)
+    )
+    mask[..., 9:] = (aiming | can_press_focus).unsqueeze(-1)
+    return mask
+
+
+def valid_action_mask_numpy(state):
+    shape = (*state.shape[:-1], ACTION_COUNT)
+    mask = np.ones(shape, dtype=bool)
+    aiming = state[..., FOCUS_AIM_STATE] > 0
+    can_press_focus = (
+        (state[..., FOCUS_CHARGE_STATE] > 0) &
+        (state[..., FOCUS_DASH_STATE] <= 0) &
+        (state[..., FOCUS_HELD_STATE] <= 0)
+    )
+    mask[..., 9:] = np.expand_dims(aiming | can_press_focus, -1)
+    return mask
+
+
+def greedy_actions(quantiles, observation):
+    values = quantiles.float().mean(dim=-1)
+    return values.masked_fill(~valid_action_mask(observation), -torch.inf).argmax(dim=-1)
+
+
+def sample_valid_actions(state, rng):
+    mask = valid_action_mask_numpy(state)
+    scores = rng.random(mask.shape)
+    scores[~mask] = -1
+    return scores.argmax(axis=-1).astype(np.uint8)
 
 
 class ResidualBlock(nn.Module):
@@ -422,6 +464,8 @@ def learn_batch(
                 discount *= world_discounts(gamma, step_scales)
 
             bootstrap_online = online_quantiles[:, n_step:n_step + unroll].mean(dim=-1)
+            bootstrap_mask = valid_action_mask(post)[:, n_step:n_step + unroll]
+            bootstrap_online = bootstrap_online.masked_fill(~bootstrap_mask, -torch.inf)
             bootstrap_actions = bootstrap_online.argmax(dim=-1)
             bootstrap_target = target_quantiles[:, n_step:n_step + unroll].gather(
                 2,

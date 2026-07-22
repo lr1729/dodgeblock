@@ -15,7 +15,9 @@ from r2d2 import (
     SequenceAssembler,
     ema_update,
     exploration_rates,
+    greedy_actions,
     learn_batch,
+    sample_valid_actions,
     tensor_observation,
 )
 from v2_bridge import ParallelEnvBridge
@@ -188,10 +190,11 @@ def main():
                 enabled=amp and device.type == 'cuda',
             ):
                 quantiles, hidden = online(observation, hidden)
-                greedy = quantiles.float().mean(dim=-1).argmax(dim=-1).cpu().numpy()
+                greedy = greedy_actions(quantiles, observation).cpu().numpy()
             timing['inference'] += time.perf_counter() - phase_started
             explore = rng.random(env_count) < epsilons
-            actions = np.where(explore, rng.integers(0, 18, env_count), greedy).astype(np.uint8)
+            random_actions = sample_valid_actions(packet['state'], rng)
+            actions = np.where(explore, random_actions, greedy).astype(np.uint8)
             phase_started = time.perf_counter()
             packet = bridge.step(actions)
             timing['environment'] += time.perf_counter() - phase_started

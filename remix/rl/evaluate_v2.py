@@ -5,7 +5,13 @@ import json
 import numpy as np
 import torch
 
-from r2d2 import RecurrentQNetwork, interquartile_mean, tensor_observation
+from r2d2 import (
+    RecurrentQNetwork,
+    greedy_actions,
+    interquartile_mean,
+    sample_valid_actions,
+    tensor_observation,
+)
 from v2_bridge import ParallelEnvBridge
 
 
@@ -77,13 +83,13 @@ def main():
                     enabled=amp and device.type == 'cuda',
                 ):
                     quantiles, hidden = model(observation, hidden)
-                    greedy = quantiles.float().mean(dim=-1).argmax(dim=-1).cpu().numpy().astype(np.uint8)
+                    greedy = greedy_actions(quantiles, observation).cpu().numpy().astype(np.uint8)
                 greedy_action_counts += np.bincount(greedy[active], minlength=len(ACTION_NAMES))
                 explore = action_rng.random(args.episodes) < args.epsilon
-                random_actions = action_rng.integers(0, len(ACTION_NAMES), args.episodes, dtype=np.uint8)
+                random_actions = sample_valid_actions(packet['state'], action_rng)
                 actions = np.where(explore, random_actions, greedy).astype(np.uint8)
             elif args.policy == 'random':
-                actions = action_rng.integers(0, len(ACTION_NAMES), args.episodes, dtype=np.uint8)
+                actions = sample_valid_actions(packet['state'], action_rng)
             else:
                 actions = np.zeros(args.episodes, np.uint8)
             action_counts += np.bincount(actions[active], minlength=len(ACTION_NAMES))

@@ -13,6 +13,10 @@ The training contract intentionally differs from assisted browser play:
 - Auto Guard and gameplay checkpoint continuation are disabled.
 - All 18 held horizontal/vertical/Focus combinations preserve browser input
   edges and simultaneous movement during Focus.
+- Focus-modified actions are masked when they cannot start or maintain Focus
+  Aim. This removes movement aliases that would otherwise leave Focus held
+  through a dash and suppress the next deliberate press; it does not choose a
+  direction or timing for the policy.
 - Observations contain causal structured geometry, warning countdowns, stacked
   forecasts, control state, and Focus state, but never the RNG or unrevealed
   future drops.
