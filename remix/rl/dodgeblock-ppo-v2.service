@@ -1,0 +1,23 @@
+[Unit]
+Description=DodgeBlock PPO v2 training on RTX 3090
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dodgeblock-r2d2/game
+ExecStart=%h/dodgeblock-r2d2/game/rl/run-ppo-v2.sh
+Restart=on-failure
+RestartSec=15
+Nice=5
+CPUWeight=40
+Environment=PYTHONUNBUFFERED=1
+Environment=CUDA_VISIBLE_DEVICES=1
+Environment=DODGEBLOCK_PYTHON=%h/envs/dodgeblock-rl/bin/python
+Environment=DODGEBLOCK_CHECKPOINT_DIR=%h/dodgeblock-ppo-v2/checkpoints
+Environment=DODGEBLOCK_TOTAL_FRAMES=100000000
+Environment=DODGEBLOCK_EVAL_AFTER_TRAIN=1
+Environment=DODGEBLOCK_EVAL_EPISODES=256
+CPUAffinity=0-5 7-15 17-19
+
+[Install]
+WantedBy=default.target

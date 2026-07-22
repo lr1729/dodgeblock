@@ -72,8 +72,22 @@ a large cold-start cost.
 
 ## PPO baseline
 
-The original feed-forward PPO implementation is retained as a historical
-baseline. Its action/observation contract and frame-survival reward do not
+`ppo_v2.py` is the current scaled fallback after the recurrent Q agent learned
+an overly conservative greedy policy. It uses the same authoritative v2
+simulation, observations, action mask, disabled Auto Guard, and disabled
+gameplay checkpoints as `train_v2.py`, but directly optimizes a stochastic
+actor-critic policy with clipped PPO updates. The reward remains dominated by
+stable height gained; a tiny survival reward can be enabled so early policies
+receive a gradient before they can climb, but it should stay small enough that
+standing still is not competitive with gaining height.
+
+```bash
+python rl/ppo_v2.py --device cuda --workers 8 --envs-per-worker 64
+python rl/evaluate_ppo_v2.py ~/dodgeblock-ppo-v2/checkpoints/latest.pt --episodes 256
+```
+
+The historical feed-forward PPO implementation is retained separately as an
+old baseline. Its action/observation contract and frame-survival reward do not
 match the v2 benchmark, so its scores must not be compared directly.
 
 ```bash
