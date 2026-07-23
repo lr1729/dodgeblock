@@ -488,6 +488,8 @@ def main():
     autocast = torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp and device.type == 'cuda')
     action_counts = np.zeros(ACTION_COUNT, np.int64)
     focus_counts = np.zeros(2, np.int64)
+    focus_available_steps = 0
+    focus_presses_available = 0
     vertical_counts = np.zeros(3, np.int64)
     horizontal_counts = np.zeros(3, np.int64)
     death_causes = Counter()
@@ -546,6 +548,17 @@ def main():
                     logprob = distribution.log_prob(action)
                 action_np = action.cpu().numpy().astype(np.uint8)
                 training_actions = action_np[training_mask]
+                training_state = observation_np['state'][training_mask]
+                focus_available = (
+                    ((training_state[:, 10] > 0) &
+                     (training_state[:, 14] <= 0) &
+                     (training_state[:, 19] <= 0)) |
+                    (training_state[:, 12] > 0)
+                )
+                focus_available_steps += int(np.sum(focus_available))
+                focus_presses_available += int(np.sum(
+                    (training_actions >= 9) & focus_available
+                ))
                 action_counts += np.bincount(training_actions, minlength=ACTION_COUNT)
                 focus_counts += np.bincount(training_actions // 9, minlength=2)
                 vertical_counts += np.bincount((training_actions % 9) // 3, minlength=3)
@@ -776,6 +789,16 @@ def main():
                             for count in horizontal_counts
                         ],
                     },
+                    'focus_available_fraction': round(
+                        focus_available_steps /
+                        max(1, int(action_counts.sum())),
+                        4,
+                    ),
+                    'focus_press_given_available': round(
+                        focus_presses_available /
+                        max(1, focus_available_steps),
+                        4,
+                    ),
                     'terminal_causes': {
                         DEATH_CAUSE_NAMES.get(code, str(code)): count
                         for code, count in sorted(death_causes.items())
@@ -807,6 +830,8 @@ def main():
                 last_log_frames = frames
                 action_counts.fill(0)
                 focus_counts.fill(0)
+                focus_available_steps = 0
+                focus_presses_available = 0
                 vertical_counts.fill(0)
                 horizontal_counts.fill(0)
                 death_causes.clear()

@@ -138,11 +138,9 @@ class CellBankCoordinator:
 
     def _cell_competence(self, key):
         stat = self.stats[key]
-        posterior = (stat['successes'] + 1) / (stat['completions'] + 2)
-        evidence = stat['completions'] / (
+        return stat['successes'] / (
             stat['completions'] + BAND_COMPETENCE_EVIDENCE
         )
-        return posterior * evidence
 
     def _band_competence(self, keys):
         if not keys:
