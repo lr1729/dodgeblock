@@ -132,6 +132,47 @@ def main():
     assert conditional.mode().tolist() == [16, 5]
 
     with tempfile.TemporaryDirectory() as temporary:
+        synthetic_bank = Path(temporary) / 'synthetic-bank.json.gz'
+        with gzip.open(synthetic_bank, 'wt') as target:
+            json.dump({
+                'version': 1,
+                'targetHeight': 10_000,
+                'seed': 99,
+                'entries': [
+                    {
+                        'key': f'band-{height}',
+                        'height': height,
+                        'previousAction': 0,
+                        'snapshot': {},
+                    }
+                    for height in (0, 400, 800)
+                ],
+            }, target)
+        wave = CellBankCoordinator(
+            [synthetic_bank],
+            target_height=10_000,
+            seed=3,
+            probability=1,
+            heldout_fraction=0,
+            band_height=400,
+        )
+        initial_weights, _ = wave._training_band_weights()
+        initial_total = sum(initial_weights.values())
+        assert initial_weights[2] / initial_total > 0.7
+        assert initial_weights[1] > 0
+        top_variant = next(
+            item.variant_id for item in wave.variants if item.height == 800
+        )
+        for _ in range(20):
+            wave.record_start(top_variant)
+            wave.record_result(top_variant, True)
+        learned_weights, competences = wave._training_band_weights()
+        assert competences[2] > 0.7
+        assert learned_weights[1] > initial_weights[1] * 20
+        assert learned_weights[1] > learned_weights[0]
+        wave.sample_clock = 10**12
+        assert wave._cell_weight('band-0') <= 2.25
+
         subprocess.run([
             'node',
             str(Path(__file__).resolve().parents[1] / 'rl' / 'go-explore.mjs'),
@@ -181,6 +222,44 @@ def main():
         assert result['episode_cell_ids'][0] == 0
         assert result['current_cell_ids'][0] == 0
         assert np.allclose(result['state'][0, 32:36], 1)
+
+        death_dir = Path(temporary) / 'deaths'
+        capture_bridge = ParallelEnvBridge(
+            1,
+            1,
+            987,
+            death_case_dir=death_dir,
+        )
+        try:
+            capture_bridge.read()
+            for _ in range(3_000):
+                capture_packet = capture_bridge.step(np.zeros(1, np.uint8))
+                assert capture_packet['step_phases'].shape == (1,)
+                assert capture_packet['step_sheltered'].shape == (1,)
+                if capture_packet['dones'][0]:
+                    break
+            else:
+                raise AssertionError('capture fixture did not terminate')
+        finally:
+            capture_bridge.close()
+        death_files = list(death_dir.glob('*.json.gz'))
+        assert death_files
+        with gzip.open(death_files[0], 'rt') as source:
+            death_case = json.load(source)
+        assert death_case['version'] == 2
+        assert death_case['history']['actions']
+        oracle = subprocess.run([
+            'node',
+            str(Path(__file__).resolve().parents[1] / 'rl' / 'rescue-oracle.mjs'),
+            '--case', str(death_files[0]),
+            '--trials', '1',
+            '--horizon', '8',
+            '--futures', '1',
+            '--rewinds', '1,30',
+        ], check=True, capture_output=True, text=True)
+        oracle_result = json.loads(oracle.stdout)
+        assert oracle_result['version'] == 2
+        assert oracle_result['evaluationCount'] >= 1
 
     demonstration = os.environ.get('DODGEBLOCK_TEST_DEMONSTRATION')
     if demonstration:

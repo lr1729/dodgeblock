@@ -318,7 +318,6 @@ def training_contract(args):
         'focus_entropy_coef_end': args.focus_entropy_coef_end,
         'direction_entropy_coef_start': args.direction_entropy_coef_start,
         'direction_entropy_coef_end': args.direction_entropy_coef_end,
-        'cell_banks': CellBankCoordinator.file_contract(args.cell_bank),
         'cell_bank_probability': args.cell_bank_probability,
         'cell_heldout_fraction': args.cell_heldout_fraction,
         'cell_band_height': args.cell_band_height,
@@ -333,6 +332,7 @@ def checkpoint_payload(agent, optimizer, coordinator, frames, args, contract):
         'frames': frames,
         'args': vars(args),
         'training_contract': contract,
+        'cell_bank_contract': CellBankCoordinator.file_contract(args.cell_bank),
         'cell_coordinator': coordinator.state_dict(),
     }
 
@@ -407,15 +407,33 @@ def main():
     frames = 0
     if args.resume:
         saved = torch.load(args.resume, map_location=device, weights_only=False)
-        if saved.get('training_contract') != contract:
+        saved_contract = dict(saved.get('training_contract', {}))
+        legacy_banks = saved_contract.pop('cell_banks', None)
+        if saved_contract != contract:
             raise ValueError(
                 'checkpoint training contract does not match this run; '
                 'use a new checkpoint directory for a changed objective or architecture'
             )
+        saved_banks = saved.get('cell_bank_contract', legacy_banks)
+        current_banks = CellBankCoordinator.file_contract(args.cell_bank)
+        banks_changed = saved_banks != current_banks
+        if banks_changed:
+            print(json.dumps({
+                'event': 'cell_bank_change',
+                'saved_banks': saved_banks,
+                'current_banks': current_banks,
+                'message': (
+                    'cell evidence was restored by stable cell key; '
+                    'variant sampling counters were reset'
+                ),
+            }), flush=True)
         agent.load_state_dict(saved['agent'])
         optimizer.load_state_dict(saved['optimizer'])
         if saved.get('cell_coordinator'):
-            coordinator.load_state_dict(saved['cell_coordinator'])
+            coordinator.load_state_dict(
+                saved['cell_coordinator'],
+                load_variant_starts=not banks_changed,
+            )
         frames = int(saved.get('frames', 0))
     if args.compile:
         agent.compile(mode=args.compile_mode, dynamic=False)
@@ -475,6 +493,8 @@ def main():
     death_causes = Counter()
     death_phases = Counter()
     death_focus = Counter()
+    phase_steps = Counter()
+    sheltered_steps = Counter()
     recent = deque(maxlen=100)
     parameter_count = sum(parameter.numel() for parameter in agent.parameters())
     half_life = None if args.gamma == 1 else round(np.log(0.5) / np.log(args.gamma), 1)
@@ -534,6 +554,13 @@ def main():
                 rollout['logprobs'][t].copy_(logprob.float().cpu())
                 rollout['values'][t].copy_(value.float().cpu())
                 packet = bridge.step(action_np, pending_reset_ids)
+                for phase in np.unique(packet['step_phases'][training_mask]):
+                    if phase:
+                        phase_mask = training_mask & (packet['step_phases'] == phase)
+                        phase_steps[int(phase)] += int(np.sum(phase_mask))
+                        sheltered_steps[int(phase)] += int(np.sum(
+                            packet['step_sheltered'][phase_mask]
+                        ))
                 rollout['rewards'][t].copy_(torch.from_numpy(packet['rewards']))
                 rollout['dones'][t].copy_(torch.from_numpy(packet['dones']).float())
                 rollout['world_scales'][t].copy_(torch.from_numpy(packet['world_scales']))
@@ -761,6 +788,13 @@ def main():
                         str(charges): count
                         for charges, count in sorted(death_focus.items())
                     },
+                    'shelter_occupancy_by_phase': {
+                        PHASE_NAMES.get(code, str(code)): round(
+                            sheltered_steps[code] / max(1, phase_steps[code]),
+                            4,
+                        )
+                        for code in sorted(phase_steps)
+                    },
                 }
                 if device.type == 'cuda':
                     stats['gpu_memory_gib'] = {
@@ -778,6 +812,8 @@ def main():
                 death_causes.clear()
                 death_phases.clear()
                 death_focus.clear()
+                phase_steps.clear()
+                sheltered_steps.clear()
 
             if frames >= next_checkpoint:
                 path = checkpoint_dir / f'ppo-v2-{frames:012d}.pt'

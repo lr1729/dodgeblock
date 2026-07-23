@@ -10,6 +10,9 @@ import numpy as np
 
 
 FRESH_CELL_ID = -1
+BAND_EXPLORATION_FLOOR = 0.01
+BAND_COMPETENCE_EVIDENCE = 4
+MAX_STALENESS_BONUS = 1.0
 
 
 @dataclass(frozen=True)
@@ -98,7 +101,11 @@ class CellBankCoordinator:
                 variant = CellVariant(
                     variant_id=len(self.variants),
                     key=key,
-                    height=float(entry.get('height', entry['snapshot']['height'])),
+                    height=float(
+                        entry['height']
+                        if 'height' in entry
+                        else entry['snapshot']['height']
+                    ),
                     seed=seed,
                     source=filename,
                 )
@@ -122,9 +129,50 @@ class CellBankCoordinator:
         stat = self.stats[key]
         posterior = (stat['successes'] + 1) / (stat['completions'] + 2)
         learning_potential = 4 * posterior * (1 - posterior)
-        staleness = np.sqrt(max(1, self.sample_clock - stat['last_sample']))
+        staleness = min(
+            MAX_STALENESS_BONUS,
+            0.01 * np.sqrt(max(1, self.sample_clock - stat['last_sample'])),
+        )
         uncertainty = 1 / np.sqrt(stat['completions'] + 1)
-        return 0.05 + learning_potential + 0.2 * uncertainty + 0.01 * staleness
+        return 0.05 + learning_potential + 0.2 * uncertainty + staleness
+
+    def _cell_competence(self, key):
+        stat = self.stats[key]
+        posterior = (stat['successes'] + 1) / (stat['completions'] + 2)
+        evidence = stat['completions'] / (
+            stat['completions'] + BAND_COMPETENCE_EVIDENCE
+        )
+        return posterior * evidence
+
+    def _band_competence(self, keys):
+        if not keys:
+            return 0.0
+        return float(np.mean([self._cell_competence(key) for key in keys]))
+
+    def _training_band_weights(self):
+        band_ids = sorted(self.training_bands)
+        weights = {}
+        competences = {
+            band: self._band_competence(self.training_bands[band])
+            for band in band_ids
+        }
+        for index, band in enumerate(band_ids):
+            # The target is the competent successor of the highest available
+            # band. Competence then propagates downward without a hard gate.
+            successor = (
+                1.0
+                if index == len(band_ids) - 1
+                else competences[band_ids[index + 1]]
+            )
+            learning_weight = np.mean([
+                self._cell_weight(key)
+                for key in self.training_bands[band]
+            ])
+            weights[band] = (
+                BAND_EXPLORATION_FLOOR +
+                learning_weight * (BAND_EXPLORATION_FLOOR + successor)
+            )
+        return weights, competences
 
     def _weighted_choice(self, values, weights):
         weights = np.asarray(weights, np.float64)
@@ -135,15 +183,12 @@ class CellBankCoordinator:
         bands = self.heldout_bands if heldout else self.training_bands
         if not bands:
             return None
-        band_ids = list(bands)
-        band_weights = (
-            [1] * len(band_ids)
-            if heldout
-            else [
-                np.mean([self._cell_weight(key) for key in bands[band]])
-                for band in band_ids
-            ]
-        )
+        band_ids = sorted(bands)
+        if heldout:
+            band_weights = [1] * len(band_ids)
+        else:
+            weights, _competences = self._training_band_weights()
+            band_weights = [weights[band] for band in band_ids]
         band = self._weighted_choice(band_ids, band_weights)
         keys = bands[band]
         seeds = sorted({
@@ -201,6 +246,7 @@ class CellBankCoordinator:
 
     def metrics(self, heldout=False):
         keys = self.heldout_keys if heldout else self.training_keys
+        bands = self.heldout_bands if heldout else self.training_bands
         attempted = [key for key in keys if self.stats[key]['starts']]
         starts = sum(self.stats[key]['starts'] for key in attempted)
         completions = sum(self.stats[key]['completions'] for key in attempted)
@@ -210,7 +256,7 @@ class CellBankCoordinator:
             (self.stats[key]['completions'] + 2)
             for key in attempted
         ]
-        return {
+        result = {
             'cells': len(keys),
             'attempted_cells': len(attempted),
             'starts': starts,
@@ -221,6 +267,36 @@ class CellBankCoordinator:
                 round(float(np.median(posterior)), 4) if posterior else None
             ),
         }
+        if not heldout:
+            weights, competences = self._training_band_weights()
+            weight_total = max(np.finfo(np.float64).tiny, sum(weights.values()))
+            result['bands'] = [
+                {
+                    'height': round(band * self.band_height),
+                    'cells': len(bands[band]),
+                    'attempted': sum(
+                        1 for key in bands[band] if self.stats[key]['starts']
+                    ),
+                    'completions': sum(
+                        self.stats[key]['completions'] for key in bands[band]
+                    ),
+                    'success_rate': round(
+                        sum(self.stats[key]['successes'] for key in bands[band]) /
+                        max(
+                            1,
+                            sum(
+                                self.stats[key]['completions']
+                                for key in bands[band]
+                            ),
+                        ),
+                        4,
+                    ),
+                    'competence': round(competences[band], 4),
+                    'sample_fraction': round(weights[band] / weight_total, 4),
+                }
+                for band in sorted(bands)
+            ]
+        return result
 
     def state_dict(self):
         return {
@@ -230,7 +306,7 @@ class CellBankCoordinator:
             'variant_starts': dict(self.variant_starts),
         }
 
-    def load_state_dict(self, state):
+    def load_state_dict(self, state, *, load_variant_starts=True):
         self.rng.bit_generator.state = state['rng_state']
         self.sample_clock = int(state.get('sample_clock', 0))
         for key, value in state.get('stats', {}).items():
@@ -241,7 +317,8 @@ class CellBankCoordinator:
                     'successes': int(value['successes']),
                     'last_sample': int(value.get('last_sample', 0)),
                 }
-        for variant_id, starts in state.get('variant_starts', {}).items():
-            variant_id = int(variant_id)
-            if 0 <= variant_id < len(self.variants):
-                self.variant_starts[variant_id] = int(starts)
+        if load_variant_starts:
+            for variant_id, starts in state.get('variant_starts', {}).items():
+                variant_id = int(variant_id)
+                if 0 <= variant_id < len(self.variants):
+                    self.variant_starts[variant_id] = int(starts)

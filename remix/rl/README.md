@@ -95,29 +95,34 @@ python rl/run_go_explore_bank.py \
   --seed-start 1 \
   --seeds 16 \
   --jobs 8 \
-  --output-dir ~/dodgeblock-go-explore-bank
+  --output-dir ~/dodgeblock-go-explore-bank-v4
 ```
 
 The Python coordinator groups similar variants by the explorer's cell key,
 holds out cell groups deterministically, tracks Beta competence evidence per
-cell, balances source variants, and samples height bands by learning potential.
-There is no advancement gate. Held-out environments act deterministically and
-are excluded from PPO loss. Workers only restore coordinator-selected variants
-and step the authoritative simulator.
+cell, balances source variants, and starts mostly near the target. Competence
+propagates sampling smoothly toward lower height bands while every band and
+fresh starts retain exploration probability. There is no advancement gate.
+Held-out environments act deterministically and are excluded from PPO loss.
+Workers only restore coordinator-selected variants and step the authoritative
+simulator.
 
 ```bash
-export DODGEBLOCK_CELL_BANK_GLOB="$HOME/dodgeblock-go-explore-bank/seed-*/search-checkpoint.json.gz"
+export DODGEBLOCK_CELL_BANK_GLOB="$HOME/dodgeblock-go-explore-bank-v4/seed-*/search-checkpoint.json.gz"
 rl/run-ppo-v4.sh
 python rl/evaluate_ppo_v2.py ~/dodgeblock-ppo-v4/checkpoints/latest.pt --episodes 256
 ```
 
 PPO checkpoints include the immutable bank hashes and centralized curriculum
-statistics. Changing the observation, action, objective, bank contents, or
-held-out split requires a new experiment directory.
+statistics. Changing the observation, action, objective, or held-out split
+requires a new experiment directory. Adding or replacing bank files emits a
+warning, restores evidence by stable cell key, and resets variant-order
+counters.
 
-To measure bounded tactical rescuability, collect exact pre-death snapshots
-during an evaluation and search coherent action bursts against both the original
-future and reshuffled remaining-material futures:
+To measure bounded tactical rescuability, collect sparse exact replay histories
+during an evaluation and search coherent action bursts from multiple rewind
+offsets against both the original future and reshuffled remaining-material
+futures:
 
 ```bash
 python rl/evaluate_ppo_v2.py ~/dodgeblock-ppo-v4/checkpoints/latest.pt \
@@ -128,6 +133,7 @@ node rl/rescue-oracle.mjs \
   --trials 64 \
   --horizon 180 \
   --futures 3 \
+  --rewinds 1,30,60,120,240 \
   --output ~/dodgeblock-rescue-cases/report.json
 ```
 

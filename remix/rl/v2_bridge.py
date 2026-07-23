@@ -51,7 +51,8 @@ class EnvWorker:
              FORECAST_COUNT * FORECAST_FEATURES + STATE_SIZE) * 4
         )
         self.packet_size = count * self.observation_bytes + count * (
-            4 + 1 + 1 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 1 + 1 + 1
+            4 + 1 + 1 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 +
+            1 + 1 + 1 + 1 + 1
         )
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
@@ -122,6 +123,10 @@ class EnvWorker:
         death_phases = np.frombuffer(data, np.uint8, count, offset).copy()
         offset += count
         death_focus = np.frombuffer(data, np.uint8, count, offset).copy()
+        offset += count
+        step_phases = np.frombuffer(data, np.uint8, count, offset).copy()
+        offset += count
+        step_sheltered = np.frombuffer(data, np.uint8, count, offset).copy()
 
         return {
             'terrain': terrain,
@@ -144,6 +149,8 @@ class EnvWorker:
             'death_causes': death_causes,
             'death_phases': death_phases,
             'death_focus': death_focus,
+            'step_phases': step_phases,
+            'step_sheltered': step_sheltered,
         }
 
     def send(self, actions, reset_ids=None):

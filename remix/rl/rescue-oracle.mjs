@@ -31,6 +31,12 @@ const horizon = Math.max(1, Math.floor(numberArg('--horizon', 180)));
 const futures = Math.max(1, Math.floor(numberArg('--futures', 3)));
 const searchSeed = numberArg('--seed', 0x5e5c_0e17) >>> 0;
 const output = stringArg('--output', '');
+const rewindFrames = [...new Set(
+  stringArg('--rewinds', '1,30,60,120,240')
+    .split(',')
+    .map((value) => Math.max(1, Math.floor(Number(value))))
+    .filter(Number.isFinite),
+)].sort((a, b) => a - b);
 const rules = Object.freeze({ autoGuard: false, checkpoints: false });
 const rng = new Rng(searchSeed);
 
@@ -73,7 +79,12 @@ function focusOption() {
 }
 
 function candidateActions(deathCase, trial) {
-  if (trial === 0) return Array(horizon).fill(deathCase.fatalAction);
+  if (trial === 0) {
+    return [
+      ...(deathCase.baselineActions ?? [deathCase.fatalAction]),
+      ...Array(horizon).fill(deathCase.fatalAction),
+    ].slice(0, horizon);
+  }
   const actions = [];
   while (actions.length < horizon) {
     const canTryFocus = deathCase.snapshot.player.focus > 0;
@@ -117,9 +128,39 @@ function rollout(deathCase, actions, futureIndex) {
   };
 }
 
-function analyze(filename) {
-  const deathCase = JSON.parse(zlib.gunzipSync(fs.readFileSync(filename)));
-  if (deathCase.version !== 1) throw new Error(`unsupported death case: ${filename}`);
+function rewindView(deathCase, rewind) {
+  if (deathCase.version === 1) {
+    if (rewind !== 1) return null;
+    return { ...deathCase, rewind, baselineActions: [deathCase.fatalAction] };
+  }
+  if (deathCase.version !== 2) {
+    throw new Error(`unsupported death case version: ${deathCase.version}`);
+  }
+  const actions = [...Buffer.from(deathCase.history.actions, 'base64')];
+  if (!actions.length || rewind > actions.length) return null;
+  const prefixLength = actions.length - rewind;
+  const sim = new Sim(deathCase.history.snapshot.seed, { rules });
+  sim.restore(deathCase.history.snapshot);
+  let previousAction = deathCase.history.previousAction;
+  for (const action of actions.slice(0, prefixLength)) {
+    sim.step(heldActionInput(action, previousAction));
+    previousAction = action;
+    if (sim.dead) {
+      throw new Error('captured action history dies before its recorded fatal action');
+    }
+  }
+  return {
+    ...deathCase,
+    rewind,
+    frame: sim.frame,
+    snapshot: sim.snapshot(),
+    previousAction,
+    fatalAction: actions[prefixLength],
+    baselineActions: actions.slice(prefixLength),
+  };
+}
+
+function analyzeView(filename, deathCase) {
   let firstOriginalRescue = null;
   let firstRobustRescue = null;
   let best = null;
@@ -149,6 +190,7 @@ function analyze(filename) {
   }
   return {
     filename,
+    rewind: deathCase.rewind,
     height: deathCase.height,
     cause: deathCase.cause,
     phase: deathCase.phase,
@@ -158,30 +200,45 @@ function analyze(filename) {
   };
 }
 
+function analyze(filename) {
+  const deathCase = JSON.parse(zlib.gunzipSync(fs.readFileSync(filename)));
+  return rewindFrames
+    .map((rewind) => rewindView(deathCase, rewind))
+    .filter(Boolean)
+    .map((view) => analyzeView(filename, view));
+}
+
 const inputs = repeatedArgs('--case');
 if (!inputs.length) throw new Error('provide at least one --case file or directory');
 const files = caseFiles(inputs);
-const cases = files.map(analyze);
+const cases = files.flatMap(analyze);
 const budgets = [...new Set([8, 16, 32, trials].filter((value) => value <= trials))]
   .sort((a, b) => a - b);
 const payload = {
-  version: 1,
+  version: 2,
   trials,
   horizon,
   futures,
   searchSeed,
-  caseCount: cases.length,
-  curves: budgets.map((budget) => ({
-    budget,
-    originalRescueRate: cases.filter(
-      (entry) => entry.firstOriginalRescue !== null &&
-        entry.firstOriginalRescue <= budget,
-    ).length / Math.max(1, cases.length),
-    robustRescueRate: cases.filter(
-      (entry) => entry.firstRobustRescue !== null &&
-        entry.firstRobustRescue <= budget,
-    ).length / Math.max(1, cases.length),
-  })),
+  rewindFrames,
+  caseCount: files.length,
+  evaluationCount: cases.length,
+  curves: rewindFrames.flatMap((rewind) => {
+    const entries = cases.filter((entry) => entry.rewind === rewind);
+    return budgets.map((budget) => ({
+      rewind,
+      budget,
+      cases: entries.length,
+      originalRescueRate: entries.filter(
+        (entry) => entry.firstOriginalRescue !== null &&
+          entry.firstOriginalRescue <= budget,
+      ).length / Math.max(1, entries.length),
+      robustRescueRate: entries.filter(
+        (entry) => entry.firstRobustRescue !== null &&
+          entry.firstRobustRescue <= budget,
+      ).length / Math.max(1, entries.length),
+    }));
+  }),
   cases,
 };
 const serialized = `${JSON.stringify(payload, null, 2)}\n`;

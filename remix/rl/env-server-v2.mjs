@@ -53,8 +53,10 @@ const cellBankPaths = repeatedArgs('--cell-bank');
 const deathCaseDir = stringArg('--death-case-dir', '');
 if (deathCaseDir) fs.mkdirSync(deathCaseDir, { recursive: true });
 const observationBytes = observationByteSize();
-const statsBytes = count * (4 + 1 + 1 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 1 + 1 + 1);
+const statsBytes = count * (4 + 1 + 1 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 1 + 1 + 1 + 1 + 1);
 const packetBytes = count * observationBytes + statsBytes;
+const DEATH_CAPTURE_STRIDE = 120;
+const DEATH_CAPTURE_ANCHORS = 4;
 
 function loadCellBank(filename) {
   const payload = JSON.parse(zlib.gunzipSync(fs.readFileSync(filename)));
@@ -91,6 +93,8 @@ const envs = Array.from({ length: count }, (_, index) => ({
   startHeight: 0,
   curriculumSource: 'fresh',
   cellVariantId: -1,
+  captureAnchors: [],
+  captureActions: [],
 }));
 
 function restoreCell(entry, index, variantId) {
@@ -125,7 +129,54 @@ function reset(entry, index, variantId = -1) {
   entry.curriculumSource = 'fresh';
   entry.cellVariantId = -1;
   restoreCell(entry, index, variantId);
+  resetDeathCapture(entry);
 }
+
+function resetDeathCapture(entry) {
+  entry.captureActions = [];
+  entry.captureAnchors = deathCaseDir
+    ? [{
+        episodeLength: 0,
+        snapshot: entry.sim.snapshot(),
+        previousAction: entry.previousAction,
+      }]
+    : [];
+}
+
+function updateDeathCapture(entry, action) {
+  if (!deathCaseDir) return;
+  if (
+    entry.episodeLength > 0 &&
+    entry.episodeLength % DEATH_CAPTURE_STRIDE === 0
+  ) {
+    entry.captureAnchors.push({
+      episodeLength: entry.episodeLength,
+      snapshot: entry.sim.snapshot(),
+      previousAction: entry.previousAction,
+    });
+    while (entry.captureAnchors.length > DEATH_CAPTURE_ANCHORS) {
+      entry.captureAnchors.shift();
+    }
+    const oldestLength = entry.captureAnchors[0].episodeLength;
+    entry.captureActions = entry.captureActions.filter(
+      (item) => item.episodeLength >= oldestLength,
+    );
+  }
+  entry.captureActions.push({ episodeLength: entry.episodeLength, action });
+}
+
+function isSheltered(sim) {
+  const player = sim.player;
+  return sim.blocks.blocks.some((block) => {
+    if (!block.fixed || block.faultTimer > 0) return false;
+    if (block.y + block.h > player.y + 0.001) return false;
+    const overlap = Math.min(player.x + player.w, block.x + block.w) -
+      Math.max(player.x, block.x);
+    return overlap >= 6;
+  });
+}
+
+for (const entry of envs) resetDeathCapture(entry);
 
 function copyFloatArray(packet, values, offset) {
   Buffer.from(values.buffer, values.byteOffset, values.byteLength).copy(packet, offset);
@@ -145,6 +196,8 @@ function writePacket(
   deathCauses = null,
   deathPhases = null,
   deathFocus = null,
+  stepPhases = null,
+  stepSheltered = null,
 ) {
   const packet = Buffer.allocUnsafe(packetBytes);
   const terrainOffset = 0;
@@ -194,6 +247,10 @@ function writePacket(
   for (let index = 0; index < count; index++) packet[offset + index] = deathPhases?.[index] ?? 0;
   offset += count;
   for (let index = 0; index < count; index++) packet[offset + index] = deathFocus?.[index] ?? 0;
+  offset += count;
+  for (let index = 0; index < count; index++) packet[offset + index] = stepPhases?.[index] ?? 0;
+  offset += count;
+  for (let index = 0; index < count; index++) packet[offset + index] = stepSheltered?.[index] ?? 0;
   process.stdout.write(packet);
 }
 
@@ -224,10 +281,17 @@ function transitionReward(beforeHeight, sim, worldScale, success) {
 const DEATH_CAUSE = Object.freeze({ fell: 1, squished: 2 });
 const PHASE_CODE = Object.freeze({ opening: 1, calm: 2, build: 3, surge: 4, release: 5 });
 
-function writeDeathCase(entry, index, snapshot, previousAction, action) {
+function writeDeathCase(entry, index, previousAction, action) {
   if (!deathCaseDir || !entry.sim.dead) return;
+  const targetLength = Math.max(0, entry.episodeLength - 240);
+  const anchor = entry.captureAnchors
+    .filter((candidate) => candidate.episodeLength <= targetLength)
+    .at(-1) ?? entry.captureAnchors[0];
+  const actions = entry.captureActions
+    .filter((item) => item.episodeLength >= anchor.episodeLength)
+    .map((item) => item.action);
   const payload = {
-    version: 1,
+    version: 2,
     seed: entry.sim.seed,
     workerPid: process.pid,
     environment: index,
@@ -238,7 +302,11 @@ function writeDeathCase(entry, index, snapshot, previousAction, action) {
     phase: entry.sim.director.phase,
     previousAction,
     fatalAction: action,
-    snapshot,
+    history: {
+      snapshot: anchor.snapshot,
+      previousAction: anchor.previousAction,
+      actions: Buffer.from(actions).toString('base64'),
+    },
   };
   const filename = `death-${process.pid}-${index}-${entry.episode}-${entry.sim.frame}.json.gz`;
   const target = path.join(deathCaseDir, filename);
@@ -261,6 +329,8 @@ function step(actions, resetIds) {
   const deathCauses = new Uint8Array(count);
   const deathPhases = new Uint8Array(count);
   const deathFocus = new Uint8Array(count);
+  const stepPhases = new Uint8Array(count);
+  const stepSheltered = new Uint8Array(count);
   for (let index = 0; index < count; index++) {
     const entry = envs[index];
     if (actions[index] === 254) continue;
@@ -271,7 +341,9 @@ function step(actions, resetIds) {
     const beforeHeight = entry.sim.height;
     const action = Math.min(ACTION_COUNT - 1, actions[index]);
     const previousAction = entry.previousAction;
-    const beforeSnapshot = deathCaseDir ? entry.sim.snapshot() : null;
+    stepPhases[index] = PHASE_CODE[entry.sim.director.phase] ?? 0;
+    stepSheltered[index] = isSheltered(entry.sim) ? 1 : 0;
+    updateDeathCapture(entry, action);
     const transition = entry.sim.step(heldActionInput(action, entry.previousAction));
     const success = !entry.sim.dead && entry.sim.height >= targetHeight;
     worldScales[index] = transition.worldScale;
@@ -282,7 +354,7 @@ function step(actions, resetIds) {
     rewards[index] = reward;
     if (!entry.sim.dead && !success) continue;
     if (entry.sim.dead) {
-      writeDeathCase(entry, index, beforeSnapshot, previousAction, action);
+      writeDeathCase(entry, index, previousAction, action);
     }
     dones[index] = 1;
     successes[index] = success ? 1 : 0;
@@ -309,6 +381,8 @@ function step(actions, resetIds) {
     deathCauses,
     deathPhases,
     deathFocus,
+    stepPhases,
+    stepSheltered,
   );
 }
 

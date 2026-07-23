@@ -18,7 +18,7 @@ Environment=DODGEBLOCK_TOTAL_FRAMES=120000000
 Environment=DODGEBLOCK_CHECKPOINT_INTERVAL=2500000
 Environment=DODGEBLOCK_GAMMA=1.0
 Environment=DODGEBLOCK_TARGET_HEIGHT=10000
-Environment=DODGEBLOCK_CELL_BANK_GLOB=%h/dodgeblock-go-explore-bank/seed-*/search-checkpoint.json.gz
+Environment=DODGEBLOCK_CELL_BANK_GLOB=%h/dodgeblock-go-explore-bank-v4/seed-*/search-checkpoint.json.gz
 Environment=DODGEBLOCK_CELL_BANK_PROBABILITY=0.8
 Environment=DODGEBLOCK_CELL_HELDOUT_FRACTION=0.1
 Environment=DODGEBLOCK_CELL_EVAL_ENVS=16
