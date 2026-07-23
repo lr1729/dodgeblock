@@ -159,7 +159,7 @@ def main():
         initial_weights, initial_competences = wave._training_band_weights()
         assert all(value == 0 for value in initial_competences.values())
         initial_total = sum(initial_weights.values())
-        assert initial_weights[2] / initial_total > 0.7
+        assert initial_weights[2] / initial_total > 0.8
         assert initial_weights[1] > 0
         top_variant = next(
             item.variant_id for item in wave.variants if item.height == 800

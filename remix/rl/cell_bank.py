@@ -168,7 +168,7 @@ class CellBankCoordinator:
             ])
             weights[band] = (
                 BAND_EXPLORATION_FLOOR +
-                learning_weight * (BAND_EXPLORATION_FLOOR + successor)
+                learning_weight * successor
             )
         return weights, competences
 
@@ -268,32 +268,35 @@ class CellBankCoordinator:
         if not heldout:
             weights, competences = self._training_band_weights()
             weight_total = max(np.finfo(np.float64).tiny, sum(weights.values()))
-            result['bands'] = [
-                {
+        result['bands'] = []
+        for band in sorted(bands):
+            band_completions = sum(
+                self.stats[key]['completions'] for key in bands[band]
+            )
+            band_successes = sum(
+                self.stats[key]['successes'] for key in bands[band]
+            )
+            item = {
                     'height': round(band * self.band_height),
                     'cells': len(bands[band]),
                     'attempted': sum(
                         1 for key in bands[band] if self.stats[key]['starts']
                     ),
-                    'completions': sum(
-                        self.stats[key]['completions'] for key in bands[band]
-                    ),
+                    'completions': band_completions,
                     'success_rate': round(
-                        sum(self.stats[key]['successes'] for key in bands[band]) /
-                        max(
-                            1,
-                            sum(
-                                self.stats[key]['completions']
-                                for key in bands[band]
-                            ),
-                        ),
+                        band_successes / max(1, band_completions),
                         4,
                     ),
+            }
+            if not heldout:
+                item.update({
                     'competence': round(competences[band], 4),
-                    'sample_fraction': round(weights[band] / weight_total, 4),
-                }
-                for band in sorted(bands)
-            ]
+                    'sample_fraction': round(
+                        weights[band] / weight_total,
+                        4,
+                    ),
+                })
+            result['bands'].append(item)
         return result
 
     def state_dict(self):
