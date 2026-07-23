@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import argparse
-from collections import deque
-import hashlib
+from collections import Counter, deque
 import json
 from pathlib import Path
 import signal
@@ -13,6 +12,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.distributions import Categorical
 
+from cell_bank import CellBankCoordinator, FRESH_CELL_ID
 from r2d2 import (
     ACTION_COUNT,
     FALLING_COUNT,
@@ -26,12 +26,79 @@ from r2d2 import (
     TERRAIN_COLS,
     TERRAIN_ROWS,
     TokenEncoder,
-    valid_action_mask,
 )
 from v2_bridge import ParallelEnvBridge
 
-TRAINING_CONTRACT_VERSION = 1
-MODEL_ARCHITECTURE = 'ppo-v2-local-terrain-1'
+TRAINING_CONTRACT_VERSION = 2
+MODEL_ARCHITECTURE = 'ppo-v4-autoregressive-cell-bank-1'
+DEATH_CAUSE_NAMES = {0: 'success', 1: 'fell', 2: 'squished'}
+PHASE_NAMES = {0: 'unknown', 1: 'opening', 2: 'calm', 3: 'build', 4: 'surge', 5: 'release'}
+
+
+def action_components(actions):
+    focus = torch.div(actions, 9, rounding_mode='floor')
+    local = actions.remainder(9)
+    vertical = torch.div(local, 3, rounding_mode='floor')
+    horizontal = local.remainder(3)
+    return focus, vertical, horizontal
+
+
+def focus_action_mask(observation):
+    state = observation['state']
+    aiming = state[..., 12] > 0
+    can_press = (
+        (state[..., 10] > 0) &
+        (state[..., 14] <= 0) &
+        (state[..., 19] <= 0)
+    )
+    return torch.stack((torch.ones_like(aiming), aiming | can_press), dim=-1)
+
+
+class AutoregressiveActionDistribution:
+    def __init__(self, logits, observation):
+        focus_logits, vertical_logits, horizontal_logits = logits
+        self.focus = Categorical(
+            logits=focus_logits.masked_fill(~focus_action_mask(observation), -1e9)
+        )
+        self.vertical_logits = vertical_logits
+        self.horizontal_logits = horizontal_logits
+        focus_logprob = self.focus.logits
+        vertical_logprob = torch.log_softmax(vertical_logits, dim=-1)
+        horizontal_logprob = torch.log_softmax(horizontal_logits, dim=-1)
+        self.joint_logprobs = (
+            focus_logprob.unsqueeze(-1).unsqueeze(-1) +
+            vertical_logprob.unsqueeze(-1) +
+            horizontal_logprob
+        ).flatten(start_dim=-3)
+        self.joint = Categorical(logits=self.joint_logprobs)
+
+    def sample(self):
+        return self.joint.sample()
+
+    def mode(self):
+        return self.joint_logprobs.argmax(dim=-1)
+
+    def log_prob(self, actions):
+        return self.joint.log_prob(actions)
+
+    def entropies(self):
+        focus_probability = self.focus.probs
+        vertical = Categorical(logits=self.vertical_logits)
+        vertical_entropy = (
+            focus_probability * vertical.entropy()
+        ).sum(dim=-1)
+        vertical_probability = vertical.probs
+        horizontal_entropy = Categorical(logits=self.horizontal_logits).entropy()
+        horizontal_entropy = (
+            focus_probability.unsqueeze(-1) *
+            vertical_probability *
+            horizontal_entropy
+        ).sum(dim=(-2, -1))
+        return {
+            'focus': self.focus.entropy(),
+            'vertical': vertical_entropy,
+            'horizontal': horizontal_entropy,
+        }
 
 
 class ActorCriticNetwork(nn.Module):
@@ -81,10 +148,13 @@ class ActorCriticNetwork(nn.Module):
             nn.Linear(384, 384),
             nn.SiLU(),
         )
-        self.actor = nn.Linear(384, ACTION_COUNT)
+        self.focus_actor = nn.Linear(384, 2)
+        self.vertical_actor = nn.Linear(384, 2 * 3)
+        self.horizontal_actor = nn.Linear(384, 2 * 3 * 3)
         self.critic = nn.Linear(384, 1)
-        nn.init.zeros_(self.actor.weight)
-        nn.init.zeros_(self.actor.bias)
+        for actor in (self.focus_actor, self.vertical_actor, self.horizontal_actor):
+            nn.init.zeros_(actor.weight)
+            nn.init.zeros_(actor.bias)
         nn.init.zeros_(self.critic.weight)
         nn.init.zeros_(self.critic.bias)
 
@@ -123,7 +193,12 @@ class ActorCriticNetwork(nn.Module):
 
     def forward(self, observation):
         hidden = self.encode(observation)
-        logits = self.actor(hidden).masked_fill(~valid_action_mask(observation), -1e9)
+        batch_shape = hidden.shape[:-1]
+        logits = (
+            self.focus_actor(hidden),
+            self.vertical_actor(hidden).reshape(*batch_shape, 2, 3),
+            self.horizontal_actor(hidden).reshape(*batch_shape, 2, 3, 3),
+        )
         return logits, self.critic(hidden).squeeze(-1)
 
 
@@ -144,23 +219,19 @@ def arguments():
     parser.add_argument('--learning-rate-end', type=float, default=2.5e-5)
     parser.add_argument('--weight-decay', type=float, default=1e-5)
     parser.add_argument('--clip-coef', type=float, default=0.1)
-    parser.add_argument('--entropy-coef-start', type=float, default=0.01)
-    parser.add_argument('--entropy-coef-end', type=float, default=0.0001)
+    parser.add_argument('--focus-entropy-coef-start', type=float, default=0.01)
+    parser.add_argument('--focus-entropy-coef-end', type=float, default=0.0001)
+    parser.add_argument('--direction-entropy-coef-start', type=float, default=0.005)
+    parser.add_argument('--direction-entropy-coef-end', type=float, default=0.0001)
     parser.add_argument('--value-coef', type=float, default=0.5)
     parser.add_argument('--max-grad-norm', type=float, default=0.5)
     parser.add_argument('--target-kl', type=float, default=0.03)
-    parser.add_argument('--archive-probability', type=float, default=0.25)
-    parser.add_argument('--archive-capacity', type=int, default=2048)
-    parser.add_argument('--death-penalty', type=float, default=1.0)
-    parser.add_argument('--alive-reward', type=float, default=0.001)
     parser.add_argument('--target-height', type=float, default=10_000)
-    parser.add_argument('--reward-mode', choices=('height', 'target'), default='target')
-    parser.add_argument('--demonstration', action='append', default=[])
-    parser.add_argument('--demonstration-probability', type=float, default=0.8)
-    parser.add_argument('--demonstration-probability-end', type=float, default=0.2)
-    parser.add_argument('--demonstration-snapshot-capacity', type=int, default=256)
-    parser.add_argument('--reverse-curriculum-initial-frames', type=int, default=60)
-    parser.add_argument('--demonstration-randomize-probability', type=float, default=1.0)
+    parser.add_argument('--cell-bank', action='append', default=[])
+    parser.add_argument('--cell-bank-probability', type=float, default=0.8)
+    parser.add_argument('--cell-heldout-fraction', type=float, default=0.1)
+    parser.add_argument('--cell-band-height', type=float, default=400)
+    parser.add_argument('--cell-eval-envs', type=int, default=0)
     parser.add_argument('--checkpoint-dir', default=str(Path.home() / 'dodgeblock-ppo-v2/checkpoints'))
     parser.add_argument('--checkpoint-interval', type=int, default=5_000_000)
     parser.add_argument('--log-interval', type=float, default=20.0)
@@ -228,21 +299,13 @@ def atomic_checkpoint(path, payload):
 
 
 def training_contract(args):
-    demonstrations = []
-    for filename in args.demonstration:
-        path = Path(filename).resolve()
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        demonstrations.append({
-            'path': str(path),
-            'sha256': digest,
-        })
     return {
         'version': TRAINING_CONTRACT_VERSION,
         'model_architecture': MODEL_ARCHITECTURE,
         'action_count': ACTION_COUNT,
         'terrain_shape': [TERRAIN_ROWS, TERRAIN_COLS],
         'target_height': args.target_height,
-        'reward_mode': args.reward_mode,
+        'reward_mode': 'target',
         'gamma': args.gamma,
         'gae_lambda': args.gae_lambda,
         'total_frames': args.total_frames,
@@ -251,24 +314,26 @@ def training_contract(args):
         'minibatch': args.minibatch,
         'learning_rate': args.learning_rate,
         'learning_rate_end': args.learning_rate_end,
-        'entropy_coef_start': args.entropy_coef_start,
-        'entropy_coef_end': args.entropy_coef_end,
-        'demonstrations': demonstrations,
-        'demonstration_probability': args.demonstration_probability,
-        'demonstration_probability_end': args.demonstration_probability_end,
-        'demonstration_snapshot_capacity': args.demonstration_snapshot_capacity,
-        'reverse_curriculum_initial_frames': args.reverse_curriculum_initial_frames,
-        'demonstration_randomize_probability': args.demonstration_randomize_probability,
+        'focus_entropy_coef_start': args.focus_entropy_coef_start,
+        'focus_entropy_coef_end': args.focus_entropy_coef_end,
+        'direction_entropy_coef_start': args.direction_entropy_coef_start,
+        'direction_entropy_coef_end': args.direction_entropy_coef_end,
+        'cell_banks': CellBankCoordinator.file_contract(args.cell_bank),
+        'cell_bank_probability': args.cell_bank_probability,
+        'cell_heldout_fraction': args.cell_heldout_fraction,
+        'cell_band_height': args.cell_band_height,
+        'cell_eval_envs': args.cell_eval_envs,
     }
 
 
-def checkpoint_payload(agent, optimizer, frames, args, contract):
+def checkpoint_payload(agent, optimizer, coordinator, frames, args, contract):
     return {
         'agent': agent.state_dict(),
         'optimizer': optimizer.state_dict(),
         'frames': frames,
         'args': vars(args),
         'training_contract': contract,
+        'cell_coordinator': coordinator.state_dict(),
     }
 
 
@@ -309,7 +374,13 @@ def explained_variance(prediction, target):
 
 def main():
     args = arguments()
-    if args.minibatch > args.rollout * args.workers * args.envs_per_worker:
+    env_count = args.workers * args.envs_per_worker
+    training_env_count = env_count - args.cell_eval_envs
+    if not 0 <= args.cell_eval_envs < env_count:
+        raise ValueError('--cell-eval-envs must be smaller than the total environment count')
+    if args.cell_eval_envs and not args.cell_bank:
+        raise ValueError('--cell-eval-envs requires at least one --cell-bank')
+    if args.minibatch > args.rollout * training_env_count:
         raise ValueError('--minibatch cannot exceed rollout batch size')
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -323,6 +394,14 @@ def main():
         raise RuntimeError('CUDA was requested but is unavailable')
 
     contract = training_contract(args)
+    coordinator = CellBankCoordinator(
+        args.cell_bank,
+        target_height=args.target_height,
+        seed=args.seed ^ 0xC311_BA4C,
+        probability=args.cell_bank_probability,
+        heldout_fraction=args.cell_heldout_fraction,
+        band_height=args.cell_band_height,
+    )
     agent = ActorCriticNetwork().to(device)
     optimizer = torch.optim.AdamW(agent.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, eps=1e-5)
     frames = 0
@@ -335,32 +414,45 @@ def main():
             )
         agent.load_state_dict(saved['agent'])
         optimizer.load_state_dict(saved['optimizer'])
+        if saved.get('cell_coordinator'):
+            coordinator.load_state_dict(saved['cell_coordinator'])
         frames = int(saved.get('frames', 0))
     if args.compile:
         agent.compile(mode=args.compile_mode, dynamic=False)
 
-    env_count = args.workers * args.envs_per_worker
     bridge = ParallelEnvBridge(
         args.workers,
         args.envs_per_worker,
         args.seed,
-        archive_probability=args.archive_probability,
-        archive_capacity=args.archive_capacity,
-        death_penalty=args.death_penalty,
-        alive_reward=args.alive_reward,
         target_height=args.target_height,
         discount=args.gamma,
-        reward_mode=args.reward_mode,
-        demonstrations=args.demonstration,
-        demonstration_probability=args.demonstration_probability if args.demonstration else 0,
-        demonstration_probability_end=args.demonstration_probability_end,
-        demonstration_snapshot_capacity=args.demonstration_snapshot_capacity,
-        reverse_curriculum_initial_frames=args.reverse_curriculum_initial_frames,
-        demonstration_randomize_probability=args.demonstration_randomize_probability,
+        reward_mode='target',
+        cell_banks=args.cell_bank,
     )
     packet = bridge.read()
+    eval_mask = np.zeros(env_count, dtype=bool)
+    if args.cell_eval_envs:
+        eval_mask[-args.cell_eval_envs:] = True
+    training_mask = ~eval_mask
+    eval_indices_device = torch.as_tensor(
+        np.flatnonzero(eval_mask),
+        dtype=torch.long,
+        device=device,
+    )
+    pending_reset_ids = np.asarray([
+        coordinator.select(heldout=bool(eval_mask[index]))
+        for index in range(env_count)
+    ], np.int32)
+    packet = bridge.reset(pending_reset_ids)
+    for variant_id in packet['current_cell_ids']:
+        coordinator.record_start(int(variant_id))
+    pending_reset_ids = np.asarray([
+        coordinator.select(heldout=bool(eval_mask[index]))
+        for index in range(env_count)
+    ], np.int32)
     fresh_episodes = deque(maxlen=500)
     curriculum_episodes = deque(maxlen=500)
+    heldout_episodes = deque(maxlen=500)
     checkpoint_dir = Path(args.checkpoint_dir)
     next_checkpoint = ((frames // args.checkpoint_interval) + 1) * args.checkpoint_interval
     stop = False
@@ -377,6 +469,12 @@ def main():
     amp = not args.no_amp
     autocast = torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp and device.type == 'cuda')
     action_counts = np.zeros(ACTION_COUNT, np.int64)
+    focus_counts = np.zeros(2, np.int64)
+    vertical_counts = np.zeros(3, np.int64)
+    horizontal_counts = np.zeros(3, np.int64)
+    death_causes = Counter()
+    death_phases = Counter()
+    death_focus = Counter()
     recent = deque(maxlen=100)
     parameter_count = sum(parameter.numel() for parameter in agent.parameters())
     half_life = None if args.gamma == 1 else round(np.log(0.5) / np.log(args.gamma), 1)
@@ -394,22 +492,20 @@ def main():
         'epochs': args.epochs,
         'gamma_per_world_frame': args.gamma,
         'discount_half_life_world_frames': half_life,
-        'archive_probability': args.archive_probability,
-        'death_penalty': args.death_penalty,
-        'alive_reward': args.alive_reward,
         'target_height': args.target_height,
-        'reward_mode': args.reward_mode,
+        'reward_mode': 'target',
         'gae_lambda_per_world_frame': args.gae_lambda,
-        'entropy_coef_start': args.entropy_coef_start,
-        'entropy_coef_end': args.entropy_coef_end,
+        'focus_entropy_coef_start': args.focus_entropy_coef_start,
+        'focus_entropy_coef_end': args.focus_entropy_coef_end,
+        'direction_entropy_coef_start': args.direction_entropy_coef_start,
+        'direction_entropy_coef_end': args.direction_entropy_coef_end,
         'learning_rate_start': args.learning_rate,
         'learning_rate_end': args.learning_rate_end,
-        'demonstrations': args.demonstration,
-        'demonstration_probability': args.demonstration_probability if args.demonstration else 0,
-        'demonstration_probability_end': args.demonstration_probability_end,
-        'demonstration_snapshot_capacity': args.demonstration_snapshot_capacity,
-        'reverse_curriculum_initial_frames': args.reverse_curriculum_initial_frames,
-        'demonstration_randomize_probability': args.demonstration_randomize_probability,
+        'cell_banks': args.cell_bank,
+        'cell_bank_probability': args.cell_bank_probability,
+        'cell_training': coordinator.metrics(False),
+        'cell_heldout': coordinator.metrics(True),
+        'cell_eval_envs': args.cell_eval_envs,
         'compiled': args.compile,
     }), flush=True)
 
@@ -423,32 +519,50 @@ def main():
                 observation = tensor_observation(observation_np, device)
                 with torch.inference_mode(), autocast:
                     logits, value = agent(observation)
-                    distribution = Categorical(logits=logits)
+                    distribution = AutoregressiveActionDistribution(logits, observation)
                     action = distribution.sample()
+                    if eval_indices_device.numel():
+                        action[eval_indices_device] = distribution.mode()[eval_indices_device]
                     logprob = distribution.log_prob(action)
                 action_np = action.cpu().numpy().astype(np.uint8)
-                action_counts += np.bincount(action_np, minlength=ACTION_COUNT)
+                training_actions = action_np[training_mask]
+                action_counts += np.bincount(training_actions, minlength=ACTION_COUNT)
+                focus_counts += np.bincount(training_actions // 9, minlength=2)
+                vertical_counts += np.bincount((training_actions % 9) // 3, minlength=3)
+                horizontal_counts += np.bincount(training_actions % 3, minlength=3)
                 rollout['actions'][t].copy_(action.cpu())
                 rollout['logprobs'][t].copy_(logprob.float().cpu())
                 rollout['values'][t].copy_(value.float().cpu())
-                packet = bridge.step(action_np)
+                packet = bridge.step(action_np, pending_reset_ids)
                 rollout['rewards'][t].copy_(torch.from_numpy(packet['rewards']))
                 rollout['dones'][t].copy_(torch.from_numpy(packet['dones']).float())
                 rollout['world_scales'][t].copy_(torch.from_numpy(packet['world_scales']))
                 done_indices = np.flatnonzero(packet['dones'])
                 for index in done_indices:
+                    source_cell = int(packet['episode_cell_ids'][index])
+                    success = bool(packet['successes'][index])
+                    coordinator.record_result(source_cell, success)
+                    coordinator.record_start(int(packet['current_cell_ids'][index]))
                     record = (
                         float(packet['heights'][index]),
                         float(packet['heights'][index] - packet['episode_starts'][index]),
                         float(packet['returns'][index]),
                         int(packet['lengths'][index]),
-                        bool(packet['successes'][index]),
+                        success,
                     )
-                    if packet['episode_starts'][index] > 0:
+                    if eval_mask[index]:
+                        heldout_episodes.append(record)
+                    elif source_cell != FRESH_CELL_ID:
                         curriculum_episodes.append(record)
                     else:
                         fresh_episodes.append(record)
-                frames += env_count
+                    death_causes[int(packet['death_causes'][index])] += 1
+                    death_phases[int(packet['death_phases'][index])] += 1
+                    death_focus[int(packet['death_focus'][index])] += 1
+                    pending_reset_ids[index] = coordinator.select(
+                        heldout=bool(eval_mask[index])
+                    )
+                frames += training_env_count
             collect_seconds = time.perf_counter() - collect_started
 
             with torch.inference_mode(), autocast:
@@ -475,15 +589,29 @@ def main():
             flat_advantages = advantages.flatten()
             flat_returns = returns.flatten()
             flat_values = rollout['values'].flatten()
-            flat_advantages = (flat_advantages - flat_advantages.mean()) / (flat_advantages.std() + 1e-8)
+            training_indices = np.flatnonzero(
+                np.tile(training_mask, args.rollout)
+            )
+            training_index_tensor = torch.as_tensor(training_indices, dtype=torch.long)
+            training_advantages = flat_advantages[training_index_tensor]
+            flat_advantages[training_index_tensor] = (
+                (training_advantages - training_advantages.mean()) /
+                (training_advantages.std() + 1e-8)
+            )
 
-            batch_size = flat_actions.numel()
-            indices = np.arange(batch_size)
+            batch_size = len(training_indices)
+            indices = training_indices.copy()
             update_started = time.perf_counter()
             training_progress = min(1.0, frames / max(1, args.total_frames))
-            entropy_coef = (
-                args.entropy_coef_start +
-                training_progress * (args.entropy_coef_end - args.entropy_coef_start)
+            focus_entropy_coef = (
+                args.focus_entropy_coef_start +
+                training_progress *
+                (args.focus_entropy_coef_end - args.focus_entropy_coef_start)
+            )
+            direction_entropy_coef = (
+                args.direction_entropy_coef_start +
+                training_progress *
+                (args.direction_entropy_coef_end - args.direction_entropy_coef_start)
             )
             learning_rate = (
                 args.learning_rate +
@@ -493,7 +621,9 @@ def main():
                 group['lr'] = learning_rate
             policy_losses = []
             value_losses = []
-            entropies = []
+            focus_entropies = []
+            vertical_entropies = []
+            horizontal_entropies = []
             approx_kls = []
             clip_fracs = []
             grad_norms = []
@@ -505,9 +635,12 @@ def main():
                     observation = minibatch_observation(flat_observation, mb, device)
                     with autocast:
                         logits, new_value = agent(observation)
-                        distribution = Categorical(logits=logits)
+                        distribution = AutoregressiveActionDistribution(logits, observation)
                         new_logprob = distribution.log_prob(flat_actions[mb].to(device, non_blocking=True))
-                        entropy = distribution.entropy().mean()
+                        component_entropy = distribution.entropies()
+                        focus_entropy = component_entropy['focus'].mean()
+                        vertical_entropy = component_entropy['vertical'].mean()
+                        horizontal_entropy = component_entropy['horizontal'].mean()
                         logratio = new_logprob - flat_logprobs[mb].to(device, non_blocking=True)
                         ratio = logratio.exp()
                         mb_advantages = flat_advantages[mb].to(device, non_blocking=True)
@@ -521,7 +654,14 @@ def main():
                             (new_value - target_return).square(),
                             (clipped_value - target_return).square(),
                         ).mean()
-                        loss = policy_loss + args.value_coef * value_loss - entropy_coef * entropy
+                        loss = (
+                            policy_loss +
+                            args.value_coef * value_loss -
+                            focus_entropy_coef * focus_entropy -
+                            direction_entropy_coef * (
+                                vertical_entropy + horizontal_entropy
+                            )
+                        )
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
                     grad_norm = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
@@ -531,7 +671,9 @@ def main():
                         clip_frac = ((ratio - 1).abs() > args.clip_coef).float().mean()
                     policy_losses.append(float(policy_loss.item()))
                     value_losses.append(float(value_loss.item()))
-                    entropies.append(float(entropy.item()))
+                    focus_entropies.append(float(focus_entropy.item()))
+                    vertical_entropies.append(float(vertical_entropy.item()))
+                    horizontal_entropies.append(float(horizontal_entropy.item()))
                     approx_kls.append(float(approx_kl.item()))
                     clip_fracs.append(float(clip_frac.item()))
                     grad_norms.append(float(grad_norm))
@@ -541,11 +683,16 @@ def main():
             recent.append({
                 'policy_loss': np.mean(policy_losses),
                 'value_loss': np.mean(value_losses),
-                'entropy': np.mean(entropies),
+                'focus_entropy': np.mean(focus_entropies),
+                'vertical_entropy': np.mean(vertical_entropies),
+                'horizontal_entropy': np.mean(horizontal_entropies),
                 'kl': np.mean(approx_kls),
                 'clip_frac': np.mean(clip_fracs),
                 'grad_norm': np.mean(grad_norms),
-                'explained_variance': explained_variance(flat_values, flat_returns),
+                'explained_variance': explained_variance(
+                    flat_values[training_index_tensor],
+                    flat_returns[training_index_tensor],
+                ),
                 'collect_seconds': collect_seconds,
                 'update_seconds': update_seconds,
             })
@@ -559,14 +706,25 @@ def main():
                     'sps': round((frames - last_log_frames) / (now - last_log), 1),
                     'fresh': window_stats(fresh_episodes),
                     'curriculum': window_stats(curriculum_episodes),
+                    'heldout': window_stats(heldout_episodes),
+                    'cell_training': coordinator.metrics(False),
+                    'cell_heldout': coordinator.metrics(True),
                     'policy_loss': round(float(np.mean([item['policy_loss'] for item in recent])), 5),
                     'value_loss': round(float(np.mean([item['value_loss'] for item in recent])), 5),
-                    'entropy': round(float(np.mean([item['entropy'] for item in recent])), 3),
+                    'entropy': {
+                        component: round(float(np.mean([
+                            item[f'{component}_entropy'] for item in recent
+                        ])), 3)
+                        for component in ('focus', 'vertical', 'horizontal')
+                    },
                     'kl': round(float(np.mean([item['kl'] for item in recent])), 5),
                     'clip_frac': round(float(np.mean([item['clip_frac'] for item in recent])), 3),
                     'grad_norm': round(float(np.mean([item['grad_norm'] for item in recent])), 3),
                     'explained_variance': round(float(np.mean([item['explained_variance'] for item in recent])), 3),
-                    'entropy_coef': round(float(entropy_coef), 6),
+                    'entropy_coef': {
+                        'focus': round(float(focus_entropy_coef), 6),
+                        'direction': round(float(direction_entropy_coef), 6),
+                    },
                     'learning_rate': round(float(learning_rate), 8),
                     'collect_fraction': round(float(np.mean([
                         item['collect_seconds'] / (item['collect_seconds'] + item['update_seconds'])
@@ -576,6 +734,32 @@ def main():
                         str(index): round(float(count / total_actions), 4)
                         for index, count in enumerate(action_counts)
                         if count
+                    },
+                    'action_factor_fractions': {
+                        'focus': [
+                            round(float(count / max(1, focus_counts.sum())), 4)
+                            for count in focus_counts
+                        ],
+                        'vertical': [
+                            round(float(count / max(1, vertical_counts.sum())), 4)
+                            for count in vertical_counts
+                        ],
+                        'horizontal': [
+                            round(float(count / max(1, horizontal_counts.sum())), 4)
+                            for count in horizontal_counts
+                        ],
+                    },
+                    'terminal_causes': {
+                        DEATH_CAUSE_NAMES.get(code, str(code)): count
+                        for code, count in sorted(death_causes.items())
+                    },
+                    'terminal_phases': {
+                        PHASE_NAMES.get(code, str(code)): count
+                        for code, count in sorted(death_phases.items())
+                    },
+                    'terminal_focus': {
+                        str(charges): count
+                        for charges, count in sorted(death_focus.items())
                     },
                 }
                 if device.type == 'cuda':
@@ -588,12 +772,18 @@ def main():
                 last_log = now
                 last_log_frames = frames
                 action_counts.fill(0)
+                focus_counts.fill(0)
+                vertical_counts.fill(0)
+                horizontal_counts.fill(0)
+                death_causes.clear()
+                death_phases.clear()
+                death_focus.clear()
 
             if frames >= next_checkpoint:
                 path = checkpoint_dir / f'ppo-v2-{frames:012d}.pt'
                 atomic_checkpoint(
                     path,
-                    checkpoint_payload(agent, optimizer, frames, args, contract),
+                    checkpoint_payload(agent, optimizer, coordinator, frames, args, contract),
                 )
                 print(json.dumps({'event': 'checkpoint', 'frames': frames, 'path': str(path)}), flush=True)
                 next_checkpoint += args.checkpoint_interval
@@ -601,7 +791,7 @@ def main():
         final_path = checkpoint_dir / f'ppo-v2-{frames:012d}.pt'
         atomic_checkpoint(
             final_path,
-            checkpoint_payload(agent, optimizer, frames, args, contract),
+            checkpoint_payload(agent, optimizer, coordinator, frames, args, contract),
         )
         bridge.close()
         print(json.dumps({

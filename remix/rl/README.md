@@ -36,8 +36,8 @@ The training contract intentionally differs from assisted browser play:
   contraction for stable off-policy learning.
 - Twenty-step distributional backups correspond to the 20 physics frames used
   by the common five-step, four-frame-repeat Atari configuration.
-- A training-only archive retains diverse stable states at 100-height bands.
-  Evaluation always starts at height zero on held-out seeds.
+- Training and evaluation start at height zero; the recurrent agent is retained
+  only as a model-free baseline for the current simulator contract.
 - Epsilon exploration holds a sampled valid action for four frames, providing
   coherent movement bursts without reducing the greedy policy's 60 Hz control.
   Actor exploration and replay sampling use independent RNG streams so replay
@@ -60,8 +60,8 @@ python rl/evaluate_v2.py ~/dodgeblock-r2d2/checkpoints/latest.pt --episodes 256
 
 Checkpoints include both Q networks, optimizer state, frame count, and the full
 training configuration. The runner automatically resumes `latest.pt`. Replay
-and curriculum archives intentionally remain process-local, so planned restarts
-should occur only at experiment boundaries.
+remains process-local, so planned restarts should occur only at experiment
+boundaries.
 
 The trainer logs wall-time fractions for actor inference, environment stepping,
 sequence assembly, replay sampling, and learning, plus CUDA peak memory. Use
@@ -72,66 +72,69 @@ a large cold-start cost.
 
 ## Target-policy PPO
 
-`ppo_v2.py` trains for reliable completion of a fixed height target. Reaching
-the target and dying are the only terminal outcomes. Potential-based height
-shaping gives local credit but telescopes to zero on a failed fresh run and one
-on a successful fresh run, so partial failure cannot become the objective.
-The undiscounted production objective (`gamma=1`) maximizes target success
-probability instead of preferring a faster, riskier completion.
+`ppo_v2.py` now implements the v4 from-scratch target agent. Hardcore rules are
+fixed: Auto Guard and checkpoint continuation are disabled. Potential shaping
+telescopes to zero on failed fresh runs and one on target completion, while
+`gamma=1` optimizes 10k success probability without preferring faster risk.
 
-The trainer retains the authoritative 60 Hz primitive controls. GAE decay is
-measured in simulation world time, so Focus Aim no longer destroys credit ten
-times faster than normal play. Entropy and learning rate anneal during training,
-and a player-centered high-resolution terrain branch preserves narrow collision
-geometry alongside the coarse whole-arena representation.
+The policy keeps the browser's 18 primitive held-input actions, represented as
+the exact autoregressive distribution
+`P(Focus) P(vertical | Focus) P(horizontal | Focus, vertical)`. This preserves
+same-frame control correlations while giving rare Focus decisions independent
+exploration and telemetry. GAE remains measured in simulation world time.
 
-PPO is robustification, not trajectory discovery. First create an exact
-replayable trajectory with the snapshot frontier explorer:
+Observations include only causal information: visible geometry and forecasts,
+control timers, and remaining material counts derivable from past drops. Hidden
+bag order and future RNG are never exposed. Curriculum restoration preserves
+the remaining bag multiset and reshuffles only its hidden order.
 
-```bash
-node rl/go-explore.mjs \
-  --seed 7 \
-  --target-height 10000 \
-  --output-dir ~/dodgeblock-go-explore/demos
-node rl/replay-demo.mjs ~/dodgeblock-go-explore/demos/demo-*.json.gz
-```
-
-The explorer uses coherent control options internally but expands them to the
-same primitive input stream used by the browser. Every frontier state retains
-its parent action segment, so a success produces a deterministic demonstration
-from frame zero rather than a disconnected high-altitude snapshot.
-
-Training replays the demonstration into a memory-bounded set of exact simulator
-snapshots. A competence gate expands starts farther from the target only after
-the current frontier is solved reliably. As the frontier moves backward, the
-demonstration-start probability falls from 0.8 to 0.2 and unrevealed future
-randomness rises to 100%; the remaining episodes always start from fresh seeds.
-The final mixture therefore retains useful hard states without retaining the
-demonstration's future sequence.
-
-Curriculum state deliberately restarts at the easiest frontier after a process
-restart. A resumed policy normally re-expands it quickly, while elapsed wall
-time can never masquerade as measured competence. PPO checkpoints validate the
-objective, architecture, demonstration hash, and schedule before loading.
+Generate machine-only state banks on multiple seeds:
 
 ```bash
-python rl/ppo_v2.py \
-  --device cuda \
-  --workers 8 \
-  --envs-per-worker 64 \
-  --demonstration ~/dodgeblock-go-explore/demos/demo-7-10k.json.gz \
-  --archive-probability 0
-python rl/evaluate_ppo_v2.py \
-  ~/dodgeblock-ppo-target-v3/checkpoints/latest.pt \
-  --episodes 256
-
-DODGEBLOCK_TEST_DEMONSTRATION=~/dodgeblock-go-explore/demos/demo-7-10k.json.gz \
-  npm run test:rl-python
+python rl/run_go_explore_bank.py \
+  --seed-start 1 \
+  --seeds 16 \
+  --jobs 8 \
+  --output-dir ~/dodgeblock-go-explore-bank
 ```
 
-The historical feed-forward PPO implementation is retained separately as an
-old baseline. Its action/observation contract and frame-survival reward do not
-match the v2 benchmark, so its scores must not be compared directly.
+The Python coordinator groups similar variants by the explorer's cell key,
+holds out cell groups deterministically, tracks Beta competence evidence per
+cell, balances source variants, and samples height bands by learning potential.
+There is no advancement gate. Held-out environments act deterministically and
+are excluded from PPO loss. Workers only restore coordinator-selected variants
+and step the authoritative simulator.
+
+```bash
+export DODGEBLOCK_CELL_BANK_GLOB="$HOME/dodgeblock-go-explore-bank/seed-*/search-checkpoint.json.gz"
+rl/run-ppo-v4.sh
+python rl/evaluate_ppo_v2.py ~/dodgeblock-ppo-v4/checkpoints/latest.pt --episodes 256
+```
+
+PPO checkpoints include the immutable bank hashes and centralized curriculum
+statistics. Changing the observation, action, objective, bank contents, or
+held-out split requires a new experiment directory.
+
+To measure bounded tactical rescuability, collect exact pre-death snapshots
+during an evaluation and search coherent action bursts against both the original
+future and reshuffled remaining-material futures:
+
+```bash
+python rl/evaluate_ppo_v2.py ~/dodgeblock-ppo-v4/checkpoints/latest.pt \
+  --episodes 128 \
+  --death-case-dir ~/dodgeblock-rescue-cases
+node rl/rescue-oracle.mjs \
+  --case ~/dodgeblock-rescue-cases \
+  --trials 64 \
+  --horizon 180 \
+  --futures 3 \
+  --output ~/dodgeblock-rescue-cases/report.json
+```
+
+A found original-future rescue is a demonstrated counterexample to
+unavoidability. Failure to find one is inconclusive; compare rescue-rate curves
+across trial budgets and horizons rather than treating the diagnostic as a
+proof of the Hardcore ceiling.
 
 ```bash
 python rl/train.py --envs 128 --total-steps 50000000

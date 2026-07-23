@@ -82,6 +82,15 @@ const encoded10k = v2.state[20];
 v2sim.height = 20_000;
 encodeObservationV2(v2sim, { previousAction: 0 }, v2);
 assert.ok(v2.state[20] > encoded10k, 'height encoding must remain unsaturated beyond 10k');
+assert.equal(v2.state[32], 1, 'opening guaranteed-wood remainder is observable');
+assert.equal(v2.state[33], 1, 'a lazy material bag exposes its full wood remainder');
+assert.equal(v2.state[34], 1, 'a lazy material bag exposes its full gravel remainder');
+assert.equal(v2.state[35], 1, 'a lazy material bag exposes its beam remainder');
+v2sim.jumpBuffer = 3.5;
+v2sim.player.timeSinceJump = 5;
+encodeObservationV2(v2sim, { previousAction: 0 }, v2);
+assert.equal(v2.state[36], 0.5, 'jump buffer state is observable');
+assert.equal(v2.state[37], 0.5, 'jump lockout state is observable');
 
 const terrainSim = new Sim(11, { director: false, rules: { autoGuard: false, checkpoints: false } });
 const lower = terrainSim.blocks.spawnAt(ARENA_X, 0, 'wood');

@@ -65,4 +65,27 @@ test('different seeds produce diverse placement and material histories', () => {
   assert.ok(signatures.size >= 9, `only ${signatures.size} distinct histories across ten seeds`);
 });
 
+test('reseeded material remainders preserve counts while changing hidden order', () => {
+  const sim = new Sim(91, { director: false });
+  sim.director.spawnCount = 4;
+  sim.director.materialBag = [
+    'wood', 'gravel', 'wood', 'beam', 'wood', 'gravel',
+  ];
+  const before = sim.director.materialRemainderCounts();
+  sim.rng.s = 123456;
+  sim.director.reshuffleMaterialRemainder();
+  assert.deepEqual(sim.director.materialRemainderCounts(), before);
+  assert.equal(sim.director.materialBag.length, 6);
+
+  sim.director.materialBag = [];
+  sim.rng.s = 987;
+  sim.director.reshuffleMaterialRemainder();
+  assert.deepEqual(
+    sim.director.materialRemainderCounts(),
+    { wood: 12, gravel: 3, beam: 1 },
+    'an empty lazy bag remains a complete future bag',
+  );
+  assert.deepEqual(sim.director.materialBag, []);
+});
+
 process.exitCode = failures ? 1 : 0;

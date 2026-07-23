@@ -15,7 +15,7 @@ FALLING_COUNT = 32
 FALLING_FEATURES = 11
 FORECAST_COUNT = 16
 FORECAST_FEATURES = 10
-STATE_SIZE = 32
+STATE_SIZE = 38
 
 
 class EnvWorker:
@@ -23,45 +23,36 @@ class EnvWorker:
         self,
         count,
         seed,
-        archive_probability=0.0,
-        archive_capacity=2048,
         death_penalty=1.0,
         alive_reward=0.0,
         target_height=10_000,
         discount=0.99999,
         reward_mode='height',
-        demonstrations=(),
-        demonstration_probability=0.0,
-        demonstration_probability_end=0.2,
-        demonstration_snapshot_capacity=256,
-        reverse_curriculum_initial_frames=60,
-        demonstration_randomize_probability=1.0,
+        cell_banks=(),
+        death_case_dir='',
     ):
         server = Path(__file__).with_name('env-server-v2.mjs')
         command = [
             'node', str(server), '--envs', str(count), '--seed', str(seed),
-            '--archive-probability', str(archive_probability),
-            '--archive-capacity', str(archive_capacity),
             '--death-penalty', str(death_penalty),
             '--alive-reward', str(alive_reward),
             '--target-height', str(target_height),
             '--discount', str(discount),
             '--reward-mode', reward_mode,
-            '--demonstration-probability', str(demonstration_probability),
-            '--demonstration-probability-end', str(demonstration_probability_end),
-            '--demonstration-snapshot-capacity', str(demonstration_snapshot_capacity),
-            '--reverse-curriculum-initial-frames', str(reverse_curriculum_initial_frames),
-            '--demonstration-randomize-probability', str(demonstration_randomize_probability),
         ]
-        for demonstration in demonstrations:
-            command.extend(['--demonstration', str(demonstration)])
+        for cell_bank in cell_banks:
+            command.extend(['--cell-bank', str(cell_bank)])
+        if death_case_dir:
+            command.extend(['--death-case-dir', str(death_case_dir)])
         self.count = count
         self.observation_bytes = (
             TERRAIN_SIZE * 2 + SKYLINE_SIZE +
             (FALLING_COUNT * FALLING_FEATURES +
              FORECAST_COUNT * FORECAST_FEATURES + STATE_SIZE) * 4
         )
-        self.packet_size = count * self.observation_bytes + count * (4 + 1 + 1 + 4 + 4 + 4 + 4 + 4 + 4 + 4)
+        self.packet_size = count * self.observation_bytes + count * (
+            4 + 1 + 1 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 + 1 + 1 + 1
+        )
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
     def _read_exact(self):
@@ -121,6 +112,16 @@ class EnvWorker:
         current_heights = np.frombuffer(data, '<f4', count, offset).copy()
         offset += count * 4
         world_scales = np.frombuffer(data, '<f4', count, offset).copy()
+        offset += count * 4
+        episode_cell_ids = np.frombuffer(data, '<i4', count, offset).copy()
+        offset += count * 4
+        current_cell_ids = np.frombuffer(data, '<i4', count, offset).copy()
+        offset += count * 4
+        death_causes = np.frombuffer(data, np.uint8, count, offset).copy()
+        offset += count
+        death_phases = np.frombuffer(data, np.uint8, count, offset).copy()
+        offset += count
+        death_focus = np.frombuffer(data, np.uint8, count, offset).copy()
 
         return {
             'terrain': terrain,
@@ -138,10 +139,21 @@ class EnvWorker:
             'start_heights': start_heights,
             'current_heights': current_heights,
             'world_scales': world_scales,
+            'episode_cell_ids': episode_cell_ids,
+            'current_cell_ids': current_cell_ids,
+            'death_causes': death_causes,
+            'death_phases': death_phases,
+            'death_focus': death_focus,
         }
 
-    def send(self, actions):
-        self.process.stdin.write(np.asarray(actions, np.uint8).tobytes())
+    def send(self, actions, reset_ids=None):
+        if reset_ids is None:
+            reset_ids = np.full(self.count, -1, np.int32)
+        command = (
+            np.asarray(actions, np.uint8).tobytes() +
+            np.asarray(reset_ids, '<i4').tobytes()
+        )
+        self.process.stdin.write(command)
         self.process.stdin.flush()
 
     def close(self):
@@ -160,37 +172,25 @@ class ParallelEnvBridge:
         workers,
         envs_per_worker,
         seed,
-        archive_probability=0.0,
-        archive_capacity=2048,
         death_penalty=1.0,
         alive_reward=0.0,
         target_height=10_000,
         discount=0.99999,
         reward_mode='height',
-        demonstrations=(),
-        demonstration_probability=0.0,
-        demonstration_probability_end=0.2,
-        demonstration_snapshot_capacity=256,
-        reverse_curriculum_initial_frames=60,
-        demonstration_randomize_probability=1.0,
+        cell_banks=(),
+        death_case_dir='',
     ):
         self.workers = [
             EnvWorker(
                 envs_per_worker,
                 seed + index * 0x1F123BB5,
-                archive_probability,
-                archive_capacity,
                 death_penalty,
                 alive_reward,
                 target_height,
                 discount,
                 reward_mode,
-                demonstrations,
-                demonstration_probability,
-                demonstration_probability_end,
-                demonstration_snapshot_capacity,
-                reverse_curriculum_initial_frames,
-                demonstration_randomize_probability,
+                cell_banks,
+                death_case_dir,
             )
             for index in range(workers)
         ]
@@ -205,11 +205,17 @@ class ParallelEnvBridge:
         futures = [self.executor.submit(worker.read) for worker in self.workers]
         return self._merge([future.result() for future in futures])
 
-    def step(self, actions):
+    def step(self, actions, reset_ids=None):
         chunks = np.split(np.asarray(actions, np.uint8), len(self.workers))
-        for worker, chunk in zip(self.workers, chunks):
-            worker.send(chunk)
+        if reset_ids is None:
+            reset_ids = np.full(self.count, -1, np.int32)
+        reset_chunks = np.split(np.asarray(reset_ids, np.int32), len(self.workers))
+        for worker, chunk, resets in zip(self.workers, chunks, reset_chunks):
+            worker.send(chunk, resets)
         return self.read()
+
+    def reset(self, reset_ids=None):
+        return self.step(np.full(self.count, 255, np.uint8), reset_ids)
 
     def close(self):
         for worker in self.workers:

@@ -1,5 +1,5 @@
 [Unit]
-Description=DodgeBlock PPO service compatibility alias
+Description=DodgeBlock v4 target-policy PPO training
 After=network.target
 
 [Service]
@@ -16,7 +16,11 @@ Environment=DODGEBLOCK_PYTHON=%h/envs/dodgeblock-rl/bin/python
 Environment=DODGEBLOCK_CHECKPOINT_DIR=%h/dodgeblock-ppo-v4/checkpoints
 Environment=DODGEBLOCK_TOTAL_FRAMES=120000000
 Environment=DODGEBLOCK_CHECKPOINT_INTERVAL=2500000
+Environment=DODGEBLOCK_GAMMA=1.0
+Environment=DODGEBLOCK_TARGET_HEIGHT=10000
 Environment=DODGEBLOCK_CELL_BANK_GLOB=%h/dodgeblock-go-explore-bank/seed-*/search-checkpoint.json.gz
+Environment=DODGEBLOCK_CELL_BANK_PROBABILITY=0.8
+Environment=DODGEBLOCK_CELL_HELDOUT_FRACTION=0.1
 Environment=DODGEBLOCK_CELL_EVAL_ENVS=16
 Environment=DODGEBLOCK_EVAL_AFTER_TRAIN=1
 Environment=DODGEBLOCK_EVAL_EPISODES=256

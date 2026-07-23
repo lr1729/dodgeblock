@@ -63,7 +63,7 @@ def main():
     model = RecurrentQNetwork(config.get('hidden_size', 512), config.get('quantiles', 51)).to(device)
     model.load_state_dict(saved['online'])
     model.eval()
-    bridge = ParallelEnvBridge(args.workers, args.episodes // args.workers, args.seed, archive_probability=0)
+    bridge = ParallelEnvBridge(args.workers, args.episodes // args.workers, args.seed)
     packet = bridge.read()
     hidden = model.initial_hidden(args.episodes, device)
     active = np.ones(args.episodes, dtype=bool)
@@ -98,7 +98,7 @@ def main():
             else:
                 actions = np.zeros(args.episodes, np.uint8)
             action_counts += np.bincount(actions[active], minlength=len(ACTION_NAMES))
-            actions[~active] = 0
+            actions[~active] = 254
             packet = bridge.step(actions)
             explorer.reset(packet['dones'])
             lengths[active] += 1

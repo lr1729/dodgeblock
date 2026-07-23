@@ -11,6 +11,7 @@ import {
   FOCUS_RECHARGE_LAYERS,
   GAME_H,
   GROUND,
+  JUMP_BUFFER_FRAMES,
   MOVE_SPEED,
   PLAYER_FALL_CAP,
   SPAWN_GRID,
@@ -27,7 +28,7 @@ export const FALLING_COUNT = 32;
 export const FALLING_FEATURES = 11;
 export const FORECAST_COUNT = 16;
 export const FORECAST_FEATURES = 10;
-export const STATE_SIZE = 32;
+export const STATE_SIZE = 38;
 
 const TERRAIN_ABOVE_ROWS = 13;
 export const TERRAIN_EDGE_LEFT = 1 << 6;
@@ -214,6 +215,7 @@ function encodeState(sim, state, controller, overflow) {
   const p = sim.player;
   const held = decodeAction(controller.previousAction);
   const stableLayer = Math.max(0, (GROUND.y - (p.y + p.h)) / BLOCK_H);
+  const material = sim.director.materialRemainderCounts();
   state.set([
     (p.x + p.w / 2 - ARENA_X) / ARENA_W,
     (p.y + sim.camY - CAMERA_ANCHOR_Y) / GAME_H,
@@ -243,6 +245,12 @@ function encodeState(sim, state, controller, overflow) {
     ...phaseVector(sim.director.phase),
     Math.min(1, overflow.falling / FALLING_COUNT),
     Math.min(1, overflow.forecasts / FORECAST_COUNT),
+    Math.max(0, 4 - sim.director.spawnCount) / 4,
+    material.wood / 12,
+    material.gravel / 3,
+    material.beam,
+    Math.min(1, sim.jumpBuffer / JUMP_BUFFER_FRAMES),
+    Math.min(1, p.timeSinceJump / 10),
   ]);
 }
 

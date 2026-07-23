@@ -111,8 +111,16 @@ function addCell(sim, previousAction, parent, actions, force = false) {
 
 function pruneArchive() {
   if (archive.size <= archiveCapacity) return;
+  const bandCounts = new Map();
+  for (const entry of archive.values()) {
+    const band = Math.floor(entry.height / (BLOCK_H * 5));
+    bandCounts.set(band, (bandCounts.get(band) ?? 0) + 1);
+  }
   const removable = [...archive.values()]
-    .filter((entry) => entry.trajectory.parent !== null)
+    .filter((entry) => {
+      const band = Math.floor(entry.height / (BLOCK_H * 5));
+      return entry.trajectory.parent !== null && (bandCounts.get(band) ?? 0) > 1;
+    })
     .sort((a, b) => {
       const aFrontier = a.height >= bestHeight - BLOCK_H * 8 ? 1 : 0;
       const bFrontier = b.height >= bestHeight - BLOCK_H * 8 ? 1 : 0;
@@ -125,7 +133,11 @@ function pruneArchive() {
     });
   const removeCount = archive.size - archiveCapacity;
   for (let index = 0; index < removeCount && index < removable.length; index++) {
-    archive.delete(removable[index].key);
+    const entry = removable[index];
+    const band = Math.floor(entry.height / (BLOCK_H * 5));
+    if ((bandCounts.get(band) ?? 0) <= 1) continue;
+    archive.delete(entry.key);
+    bandCounts.set(band, bandCounts.get(band) - 1);
   }
 }
 
@@ -254,9 +266,32 @@ function writeStatus(iteration, started) {
 }
 
 function writeSearchCheckpoint(iteration) {
-  const entries = [...archive.values()]
-    .sort((a, b) => b.height - a.height || a.chosen - b.chosen || a.frame - b.frame)
-    .slice(0, 512)
+  const bands = new Map();
+  for (const entry of archive.values()) {
+    const band = Math.floor(entry.height / (BLOCK_H * 5));
+    if (!bands.has(band)) bands.set(band, []);
+    bands.get(band).push(entry);
+  }
+  for (const entries of bands.values()) {
+    entries.sort((a, b) =>
+      entryQuality(b) - entryQuality(a) ||
+      b.height - a.height ||
+      a.chosen - b.chosen);
+  }
+  const selected = [];
+  const bandIds = [...bands.keys()].sort((a, b) => b - a);
+  for (let rank = 0; selected.length < 512; rank++) {
+    let added = false;
+    for (const band of bandIds) {
+      const entry = bands.get(band)[rank];
+      if (!entry) continue;
+      selected.push(entry);
+      added = true;
+      if (selected.length >= 512) break;
+    }
+    if (!added) break;
+  }
+  const entries = selected
     .map((entry) => ({
       key: entry.key,
       snapshot: entry.snapshot,
@@ -352,6 +387,7 @@ for (let iteration = startIteration; iteration <= iterations; iteration++) {
         frames: reconstructActions(origin, actions).length,
         demonstration,
       })}\n`);
+      writeSearchCheckpoint(iteration);
       process.exit(0);
     }
 

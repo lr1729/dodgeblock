@@ -26,6 +26,11 @@ const MATERIAL_BAG = [
   'gravel', 'gravel', 'gravel', 'beam',
 ];
 const BEAM_WIDTH = BLOCK_W + SPAWN_GRID * 2;
+const MATERIAL_COUNTS = Object.freeze({
+  wood: MATERIAL_BAG.filter((type) => type === 'wood').length,
+  gravel: MATERIAL_BAG.filter((type) => type === 'gravel').length,
+  beam: MATERIAL_BAG.filter((type) => type === 'beam').length,
+});
 
 function clamp(value, lo, hi) {
   return Math.max(lo, Math.min(hi, value));
@@ -207,10 +212,27 @@ export class Director {
 
   refillMaterialBag() {
     this.materialBag = [...MATERIAL_BAG];
+    this.shuffleMaterialBag();
+  }
+
+  shuffleMaterialBag() {
     for (let i = this.materialBag.length - 1; i > 0; i--) {
       const j = this.sim.rng.int(0, i + 1);
       [this.materialBag[i], this.materialBag[j]] = [this.materialBag[j], this.materialBag[i]];
     }
+  }
+
+  materialRemainderCounts() {
+    const counts = { wood: 0, gravel: 0, beam: 0 };
+    if (!this.materialBag.length) return { ...MATERIAL_COUNTS };
+    for (const type of this.materialBag) counts[type]++;
+    return counts;
+  }
+
+  reshuffleMaterialRemainder() {
+    // An empty bag is lazily refilled by peekMaterial. Leaving it empty keeps
+    // the future RNG call order identical while still representing a full bag.
+    if (this.materialBag.length) this.shuffleMaterialBag();
   }
 
   findSpawn(type) {

@@ -4,10 +4,14 @@ import json
 
 import numpy as np
 import torch
-from torch.distributions import Categorical
 
 from evaluate_v2 import ACTION_NAMES, bootstrap_interval
-from ppo_v2 import ActorCriticNetwork, packet_observation, tensor_observation
+from ppo_v2 import (
+    ActorCriticNetwork,
+    AutoregressiveActionDistribution,
+    packet_observation,
+    tensor_observation,
+)
 from r2d2 import interquartile_mean
 from v2_bridge import ParallelEnvBridge
 
@@ -23,6 +27,7 @@ def main():
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--stochastic', action='store_true')
     parser.add_argument('--no-amp', action='store_true')
+    parser.add_argument('--death-case-dir', default='')
     args = parser.parse_args()
     if args.episodes % args.workers:
         raise ValueError('--episodes must be divisible by --workers')
@@ -40,9 +45,9 @@ def main():
         args.workers,
         args.episodes // args.workers,
         args.seed,
-        archive_probability=0,
         target_height=args.target_height,
         reward_mode='target',
+        death_case_dir=args.death_case_dir,
     )
     packet = bridge.read()
     active = np.ones(args.episodes, dtype=bool)
@@ -61,12 +66,13 @@ def main():
                 enabled=amp and device.type == 'cuda',
             ):
                 logits, _value = agent(observation)
+                distribution = AutoregressiveActionDistribution(logits, observation)
                 if args.stochastic:
-                    actions = Categorical(logits=logits).sample().cpu().numpy().astype(np.uint8)
+                    actions = distribution.sample().cpu().numpy().astype(np.uint8)
                 else:
-                    actions = logits.argmax(dim=-1).cpu().numpy().astype(np.uint8)
+                    actions = distribution.mode().cpu().numpy().astype(np.uint8)
             action_counts += np.bincount(actions[active], minlength=len(ACTION_NAMES))
-            actions[~active] = 0
+            actions[~active] = 254
             packet = bridge.step(actions)
             lengths[active] += 1
 

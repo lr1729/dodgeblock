@@ -52,8 +52,6 @@ def arguments():
     parser.add_argument('--epsilon-min', type=float, default=0.02)
     parser.add_argument('--random-warmup-frames', type=int, default=1_000_000)
     parser.add_argument('--learning-start-frames', type=int, default=1_000_000)
-    parser.add_argument('--archive-probability', type=float, default=0.25)
-    parser.add_argument('--archive-capacity', type=int, default=2048)
     parser.add_argument('--death-penalty', type=float, default=1.0)
     parser.add_argument('--checkpoint-dir', default=str(Path.home() / 'dodgeblock-r2d2/checkpoints'))
     parser.add_argument('--checkpoint-interval', type=int, default=10_000_000)
@@ -134,8 +132,6 @@ def main():
         args.workers,
         args.envs_per_worker,
         args.seed,
-        archive_probability=args.archive_probability,
-        archive_capacity=args.archive_capacity,
         death_penalty=args.death_penalty,
     )
     assembler = SequenceAssembler(env_count, args.burn_in, args.unroll, args.n_step)
@@ -179,7 +175,6 @@ def main():
         'envs': env_count,
         'workers': args.workers,
         'parameters': parameter_count,
-        'archive_probability': args.archive_probability,
         'gamma_per_world_frame': args.gamma,
         'discount_half_life_world_frames': half_life,
         'n_step': args.n_step,
