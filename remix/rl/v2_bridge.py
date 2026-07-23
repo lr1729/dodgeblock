@@ -27,6 +27,15 @@ class EnvWorker:
         archive_capacity=2048,
         death_penalty=1.0,
         alive_reward=0.0,
+        target_height=10_000,
+        discount=0.99999,
+        reward_mode='height',
+        demonstrations=(),
+        demonstration_probability=0.0,
+        demonstration_probability_end=0.2,
+        demonstration_snapshot_capacity=256,
+        reverse_curriculum_initial_frames=60,
+        demonstration_randomize_probability=1.0,
     ):
         server = Path(__file__).with_name('env-server-v2.mjs')
         command = [
@@ -35,14 +44,24 @@ class EnvWorker:
             '--archive-capacity', str(archive_capacity),
             '--death-penalty', str(death_penalty),
             '--alive-reward', str(alive_reward),
+            '--target-height', str(target_height),
+            '--discount', str(discount),
+            '--reward-mode', reward_mode,
+            '--demonstration-probability', str(demonstration_probability),
+            '--demonstration-probability-end', str(demonstration_probability_end),
+            '--demonstration-snapshot-capacity', str(demonstration_snapshot_capacity),
+            '--reverse-curriculum-initial-frames', str(reverse_curriculum_initial_frames),
+            '--demonstration-randomize-probability', str(demonstration_randomize_probability),
         ]
+        for demonstration in demonstrations:
+            command.extend(['--demonstration', str(demonstration)])
         self.count = count
         self.observation_bytes = (
             TERRAIN_SIZE * 2 + SKYLINE_SIZE +
             (FALLING_COUNT * FALLING_FEATURES +
              FORECAST_COUNT * FORECAST_FEATURES + STATE_SIZE) * 4
         )
-        self.packet_size = count * self.observation_bytes + count * (4 + 1 + 4 + 4 + 4 + 4 + 4 + 4 + 4)
+        self.packet_size = count * self.observation_bytes + count * (4 + 1 + 1 + 4 + 4 + 4 + 4 + 4 + 4 + 4)
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
     def _read_exact(self):
@@ -87,6 +106,8 @@ class EnvWorker:
         offset += count * 4
         dones = np.frombuffer(data, np.uint8, count, offset).copy()
         offset += count
+        successes = np.frombuffer(data, np.uint8, count, offset).copy()
+        offset += count
         returns = np.frombuffer(data, '<f4', count, offset).copy()
         offset += count * 4
         lengths = np.frombuffer(data, '<u4', count, offset).copy()
@@ -109,6 +130,7 @@ class EnvWorker:
             'state': state,
             'rewards': rewards,
             'dones': dones,
+            'successes': successes,
             'returns': returns,
             'lengths': lengths,
             'heights': heights,
@@ -142,6 +164,15 @@ class ParallelEnvBridge:
         archive_capacity=2048,
         death_penalty=1.0,
         alive_reward=0.0,
+        target_height=10_000,
+        discount=0.99999,
+        reward_mode='height',
+        demonstrations=(),
+        demonstration_probability=0.0,
+        demonstration_probability_end=0.2,
+        demonstration_snapshot_capacity=256,
+        reverse_curriculum_initial_frames=60,
+        demonstration_randomize_probability=1.0,
     ):
         self.workers = [
             EnvWorker(
@@ -151,6 +182,15 @@ class ParallelEnvBridge:
                 archive_capacity,
                 death_penalty,
                 alive_reward,
+                target_height,
+                discount,
+                reward_mode,
+                demonstrations,
+                demonstration_probability,
+                demonstration_probability_end,
+                demonstration_snapshot_capacity,
+                reverse_curriculum_initial_frames,
+                demonstration_randomize_probability,
             )
             for index in range(workers)
         ]

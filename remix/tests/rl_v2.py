@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+import base64
+import gzip
+import json
+import os
 from pathlib import Path
 import sys
 
@@ -16,6 +20,7 @@ from r2d2 import (  # noqa: E402
     tensor_observation,
     world_discounts,
 )
+from ppo_v2 import ActorCriticNetwork, packet_observation, tensor_observation as ppo_tensor_observation  # noqa: E402
 from v2_bridge import ParallelEnvBridge  # noqa: E402
 
 
@@ -41,7 +46,7 @@ def main():
     assert sequences
     assert terminal_returns
     for episode_return, height in terminal_returns:
-        assert abs(episode_return - height / 40) < 1e-5
+        assert abs(episode_return - (height / 40 - 1)) < 1e-5
     for sequence in sequences:
         assert np.all(sequence['world_scales'][sequence['valid'].astype(bool)] > 0)
         terminal = np.flatnonzero(sequence['dones'] * sequence['valid'])
@@ -85,7 +90,46 @@ def main():
     discounts = world_discounts(0.99999, scales)
     assert discounts[1] > discounts[0]
     assert torch.isclose(discounts[1].pow(10), discounts[0], atol=1e-6)
-    print('ok recurrent replay, terminal sequences, and score reward are valid')
+
+    ppo = ActorCriticNetwork()
+    ppo_observation = ppo_tensor_observation(packet_observation(packet), torch.device('cpu'))
+    with torch.no_grad():
+        logits, values = ppo(ppo_observation)
+    assert logits.shape == (2, 18)
+    assert values.shape == (2,)
+    assert torch.all(torch.isfinite(logits))
+    assert torch.all(torch.isfinite(values))
+
+    demonstration = os.environ.get('DODGEBLOCK_TEST_DEMONSTRATION')
+    if demonstration:
+        with gzip.open(demonstration, 'rt') as source:
+            payload = json.load(source)
+        final_action = base64.b64decode(payload['actions'])[-1]
+        target_bridge = ParallelEnvBridge(
+            1,
+            2,
+            456,
+            archive_probability=0,
+            target_height=payload['targetHeight'],
+            reward_mode='target',
+            demonstrations=[demonstration],
+            demonstration_probability=1,
+            demonstration_probability_end=1,
+            demonstration_snapshot_capacity=8,
+            reverse_curriculum_initial_frames=1,
+            demonstration_randomize_probability=0,
+        )
+        try:
+            target_bridge.read()
+            result = target_bridge.step(np.full(2, final_action, np.uint8))
+        finally:
+            target_bridge.close()
+        assert np.all(result['dones'] == 1)
+        assert np.all(result['successes'] == 1)
+        assert np.all(result['heights'] >= payload['targetHeight'])
+        assert np.all(result['current_heights'] < payload['targetHeight'])
+
+    print('ok recurrent replay, PPO forward pass, terminal rewards, and target curriculum are valid')
 
 
 if __name__ == '__main__':

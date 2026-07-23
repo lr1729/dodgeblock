@@ -8,8 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "npm run test:sim && npm run test:planner",
-    "test:sim": "node tests/determinism.mjs && node tests/verbs.mjs && node tests/invariants.mjs && node tests/rl.mjs",
-    "test:planner": "node tests/planner.mjs && node tests/warnings.mjs"
+    "test:sim": "node tests/determinism.mjs && node tests/verbs.mjs && node tests/invariants.mjs && node tests/rl.mjs && node tests/rl-rewards.mjs",
+    "test:planner": "node tests/planner.mjs && node tests/warnings.mjs",
+    "test:rl-python": "PYTHONPATH=rl python3 tests/rl_v2.py"
   },
   "dependencies": {
     "phaser": "^3.90.0"

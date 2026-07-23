@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from collections import deque
+import hashlib
 import json
 from pathlib import Path
 import signal
@@ -9,6 +10,7 @@ import time
 import numpy as np
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.distributions import Categorical
 
 from r2d2 import (
@@ -28,6 +30,9 @@ from r2d2 import (
 )
 from v2_bridge import ParallelEnvBridge
 
+TRAINING_CONTRACT_VERSION = 1
+MODEL_ARCHITECTURE = 'ppo-v2-local-terrain-1'
+
 
 class ActorCriticNetwork(nn.Module):
     def __init__(self):
@@ -46,6 +51,16 @@ class ActorCriticNetwork(nn.Module):
             nn.LayerNorm(256),
             nn.SiLU(),
         )
+        self.local_terrain = nn.Sequential(
+            nn.Conv2d(15, 32, 3, padding=1),
+            ResidualBlock(32),
+            nn.Conv2d(32, 32, 3, stride=2, padding=1),
+            ResidualBlock(32),
+            nn.Flatten(),
+            nn.Linear(32 * 8 * 10, 128),
+            nn.LayerNorm(128),
+            nn.SiLU(),
+        )
         self.skyline = nn.Sequential(
             nn.Conv1d(1, 16, 5, padding=2), nn.SiLU(),
             nn.Conv1d(16, 32, 5, stride=2, padding=2), nn.SiLU(),
@@ -60,7 +75,7 @@ class ActorCriticNetwork(nn.Module):
             nn.Linear(128, 128), nn.SiLU(),
         )
         self.body = nn.Sequential(
-            nn.Linear(256 + 64 + 128 + 128 + 128, 384),
+            nn.Linear(256 + 128 + 64 + 128 + 128 + 128, 384),
             nn.LayerNorm(384),
             nn.SiLU(),
             nn.Linear(384, 384),
@@ -87,12 +102,19 @@ class ActorCriticNetwork(nn.Module):
         ), dim=-1).to(material.dtype)
         terrain = torch.cat((material, terrain_flags), dim=-1)
         terrain = terrain.permute(0, 3, 1, 2)
+        state = observation['state'].float()
+        padded = F.pad(terrain, (10, 10, 0, 0))
+        player_columns = (state[..., 0] * TERRAIN_COLS).long().clamp(0, TERRAIN_COLS - 1) + 10
+        offsets = torch.arange(-10, 10, device=terrain.device)
+        local_columns = player_columns.unsqueeze(-1) + offsets
+        local_indices = local_columns[:, None, None, :].expand(-1, terrain.shape[1], 16, -1)
+        local = padded[:, :, 5:21, :].gather(3, local_indices)
         skyline = (observation['skyline'].float().unsqueeze(1) - 128) / 16
         falling = observation['falling'].float()
         forecasts = observation['forecasts'].float()
-        state = observation['state'].float()
         return self.body(torch.cat((
             self.terrain(terrain),
+            self.local_terrain(local),
             self.skyline(skyline),
             self.falling(falling),
             self.forecasts(forecasts),
@@ -110,18 +132,20 @@ def arguments():
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--envs-per-worker', type=int, default=64)
     parser.add_argument('--total-frames', type=int, default=100_000_000)
-    parser.add_argument('--rollout', type=int, default=128)
+    parser.add_argument('--rollout', type=int, default=256)
     parser.add_argument('--epochs', type=int, default=3)
     parser.add_argument('--minibatch', type=int, default=4096)
     parser.add_argument('--seed', type=int, default=7)
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--threads', type=int, default=4)
-    parser.add_argument('--gamma', type=float, default=0.99999)
-    parser.add_argument('--gae-lambda', type=float, default=0.95)
+    parser.add_argument('--gamma', type=float, default=1.0)
+    parser.add_argument('--gae-lambda', type=float, default=0.995)
     parser.add_argument('--learning-rate', type=float, default=2.5e-4)
+    parser.add_argument('--learning-rate-end', type=float, default=2.5e-5)
     parser.add_argument('--weight-decay', type=float, default=1e-5)
     parser.add_argument('--clip-coef', type=float, default=0.1)
-    parser.add_argument('--entropy-coef', type=float, default=0.02)
+    parser.add_argument('--entropy-coef-start', type=float, default=0.01)
+    parser.add_argument('--entropy-coef-end', type=float, default=0.0001)
     parser.add_argument('--value-coef', type=float, default=0.5)
     parser.add_argument('--max-grad-norm', type=float, default=0.5)
     parser.add_argument('--target-kl', type=float, default=0.03)
@@ -129,6 +153,14 @@ def arguments():
     parser.add_argument('--archive-capacity', type=int, default=2048)
     parser.add_argument('--death-penalty', type=float, default=1.0)
     parser.add_argument('--alive-reward', type=float, default=0.001)
+    parser.add_argument('--target-height', type=float, default=10_000)
+    parser.add_argument('--reward-mode', choices=('height', 'target'), default='target')
+    parser.add_argument('--demonstration', action='append', default=[])
+    parser.add_argument('--demonstration-probability', type=float, default=0.8)
+    parser.add_argument('--demonstration-probability-end', type=float, default=0.2)
+    parser.add_argument('--demonstration-snapshot-capacity', type=int, default=256)
+    parser.add_argument('--reverse-curriculum-initial-frames', type=int, default=60)
+    parser.add_argument('--demonstration-randomize-probability', type=float, default=1.0)
     parser.add_argument('--checkpoint-dir', default=str(Path.home() / 'dodgeblock-ppo-v2/checkpoints'))
     parser.add_argument('--checkpoint-interval', type=int, default=5_000_000)
     parser.add_argument('--log-interval', type=float, default=20.0)
@@ -195,20 +227,72 @@ def atomic_checkpoint(path, payload):
     latest.symlink_to(path.name)
 
 
+def training_contract(args):
+    demonstrations = []
+    for filename in args.demonstration:
+        path = Path(filename).resolve()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        demonstrations.append({
+            'path': str(path),
+            'sha256': digest,
+        })
+    return {
+        'version': TRAINING_CONTRACT_VERSION,
+        'model_architecture': MODEL_ARCHITECTURE,
+        'action_count': ACTION_COUNT,
+        'terrain_shape': [TERRAIN_ROWS, TERRAIN_COLS],
+        'target_height': args.target_height,
+        'reward_mode': args.reward_mode,
+        'gamma': args.gamma,
+        'gae_lambda': args.gae_lambda,
+        'total_frames': args.total_frames,
+        'rollout': args.rollout,
+        'epochs': args.epochs,
+        'minibatch': args.minibatch,
+        'learning_rate': args.learning_rate,
+        'learning_rate_end': args.learning_rate_end,
+        'entropy_coef_start': args.entropy_coef_start,
+        'entropy_coef_end': args.entropy_coef_end,
+        'demonstrations': demonstrations,
+        'demonstration_probability': args.demonstration_probability,
+        'demonstration_probability_end': args.demonstration_probability_end,
+        'demonstration_snapshot_capacity': args.demonstration_snapshot_capacity,
+        'reverse_curriculum_initial_frames': args.reverse_curriculum_initial_frames,
+        'demonstration_randomize_probability': args.demonstration_randomize_probability,
+    }
+
+
+def checkpoint_payload(agent, optimizer, frames, args, contract):
+    return {
+        'agent': agent.state_dict(),
+        'optimizer': optimizer.state_dict(),
+        'frames': frames,
+        'args': vars(args),
+        'training_contract': contract,
+    }
+
+
 def window_stats(records):
     if not records:
         return {}
     heights = np.asarray([item[0] for item in records], np.float64)
-    returns = np.asarray([item[1] for item in records], np.float64)
-    lengths = np.asarray([item[2] for item in records], np.float64)
+    progress = np.asarray([item[1] for item in records], np.float64)
+    returns = np.asarray([item[2] for item in records], np.float64)
+    lengths = np.asarray([item[3] for item in records], np.float64)
+    successes = np.asarray([item[4] for item in records], np.bool_)
     return {
         'episodes': len(records),
         'mean_height': round(float(heights.mean()), 1),
+        'mean_progress': round(float(progress.mean()), 1),
+        'median_progress': round(float(np.median(progress)), 1),
+        'p90_progress': round(float(np.percentile(progress, 90)), 1),
+        'max_progress': round(float(progress.max()), 1),
         'median_height': round(float(np.median(heights)), 1),
         'p90_height': round(float(np.percentile(heights, 90)), 1),
         'max_height': round(float(heights.max()), 1),
         'mean_return': round(float(returns.mean()), 3),
         'mean_length': round(float(lengths.mean()), 1),
+        'target_success': round(float(successes.mean()), 3),
         'success_1k': round(float(np.mean(heights >= 1_000)), 3),
         'success_2_5k': round(float(np.mean(heights >= 2_500)), 3),
         'success_5k': round(float(np.mean(heights >= 5_000)), 3),
@@ -238,11 +322,17 @@ def main():
     if device.type == 'cuda' and not torch.cuda.is_available():
         raise RuntimeError('CUDA was requested but is unavailable')
 
+    contract = training_contract(args)
     agent = ActorCriticNetwork().to(device)
     optimizer = torch.optim.AdamW(agent.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, eps=1e-5)
     frames = 0
     if args.resume:
         saved = torch.load(args.resume, map_location=device, weights_only=False)
+        if saved.get('training_contract') != contract:
+            raise ValueError(
+                'checkpoint training contract does not match this run; '
+                'use a new checkpoint directory for a changed objective or architecture'
+            )
         agent.load_state_dict(saved['agent'])
         optimizer.load_state_dict(saved['optimizer'])
         frames = int(saved.get('frames', 0))
@@ -258,6 +348,15 @@ def main():
         archive_capacity=args.archive_capacity,
         death_penalty=args.death_penalty,
         alive_reward=args.alive_reward,
+        target_height=args.target_height,
+        discount=args.gamma,
+        reward_mode=args.reward_mode,
+        demonstrations=args.demonstration,
+        demonstration_probability=args.demonstration_probability if args.demonstration else 0,
+        demonstration_probability_end=args.demonstration_probability_end,
+        demonstration_snapshot_capacity=args.demonstration_snapshot_capacity,
+        reverse_curriculum_initial_frames=args.reverse_curriculum_initial_frames,
+        demonstration_randomize_probability=args.demonstration_randomize_probability,
     )
     packet = bridge.read()
     fresh_episodes = deque(maxlen=500)
@@ -298,6 +397,19 @@ def main():
         'archive_probability': args.archive_probability,
         'death_penalty': args.death_penalty,
         'alive_reward': args.alive_reward,
+        'target_height': args.target_height,
+        'reward_mode': args.reward_mode,
+        'gae_lambda_per_world_frame': args.gae_lambda,
+        'entropy_coef_start': args.entropy_coef_start,
+        'entropy_coef_end': args.entropy_coef_end,
+        'learning_rate_start': args.learning_rate,
+        'learning_rate_end': args.learning_rate_end,
+        'demonstrations': args.demonstration,
+        'demonstration_probability': args.demonstration_probability if args.demonstration else 0,
+        'demonstration_probability_end': args.demonstration_probability_end,
+        'demonstration_snapshot_capacity': args.demonstration_snapshot_capacity,
+        'reverse_curriculum_initial_frames': args.reverse_curriculum_initial_frames,
+        'demonstration_randomize_probability': args.demonstration_randomize_probability,
         'compiled': args.compile,
     }), flush=True)
 
@@ -327,8 +439,10 @@ def main():
                 for index in done_indices:
                     record = (
                         float(packet['heights'][index]),
+                        float(packet['heights'][index] - packet['episode_starts'][index]),
                         float(packet['returns'][index]),
                         int(packet['lengths'][index]),
+                        bool(packet['successes'][index]),
                     )
                     if packet['episode_starts'][index] > 0:
                         curriculum_episodes.append(record)
@@ -348,7 +462,11 @@ def main():
                 nonterminal = 1 - rollout['dones'][t]
                 discount = torch.pow(torch.full_like(rollout['world_scales'][t], args.gamma), rollout['world_scales'][t])
                 delta = rollout['rewards'][t] + discount * bootstrap * nonterminal - rollout['values'][t]
-                last_gae = delta + discount * args.gae_lambda * nonterminal * last_gae
+                trace_discount = torch.pow(
+                    torch.full_like(rollout['world_scales'][t], args.gamma * args.gae_lambda),
+                    rollout['world_scales'][t],
+                )
+                last_gae = delta + trace_discount * nonterminal * last_gae
                 advantages[t] = last_gae
             returns = advantages + rollout['values']
             flat_observation = flatten_observations(rollout)
@@ -362,6 +480,17 @@ def main():
             batch_size = flat_actions.numel()
             indices = np.arange(batch_size)
             update_started = time.perf_counter()
+            training_progress = min(1.0, frames / max(1, args.total_frames))
+            entropy_coef = (
+                args.entropy_coef_start +
+                training_progress * (args.entropy_coef_end - args.entropy_coef_start)
+            )
+            learning_rate = (
+                args.learning_rate +
+                training_progress * (args.learning_rate_end - args.learning_rate)
+            )
+            for group in optimizer.param_groups:
+                group['lr'] = learning_rate
             policy_losses = []
             value_losses = []
             entropies = []
@@ -392,7 +521,7 @@ def main():
                             (new_value - target_return).square(),
                             (clipped_value - target_return).square(),
                         ).mean()
-                        loss = policy_loss + args.value_coef * value_loss - args.entropy_coef * entropy
+                        loss = policy_loss + args.value_coef * value_loss - entropy_coef * entropy
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
                     grad_norm = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
@@ -437,6 +566,8 @@ def main():
                     'clip_frac': round(float(np.mean([item['clip_frac'] for item in recent])), 3),
                     'grad_norm': round(float(np.mean([item['grad_norm'] for item in recent])), 3),
                     'explained_variance': round(float(np.mean([item['explained_variance'] for item in recent])), 3),
+                    'entropy_coef': round(float(entropy_coef), 6),
+                    'learning_rate': round(float(learning_rate), 8),
                     'collect_fraction': round(float(np.mean([
                         item['collect_seconds'] / (item['collect_seconds'] + item['update_seconds'])
                         for item in recent
@@ -456,25 +587,22 @@ def main():
                 print(json.dumps(stats), flush=True)
                 last_log = now
                 last_log_frames = frames
+                action_counts.fill(0)
 
             if frames >= next_checkpoint:
                 path = checkpoint_dir / f'ppo-v2-{frames:012d}.pt'
-                atomic_checkpoint(path, {
-                    'agent': agent.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'frames': frames,
-                    'args': vars(args),
-                })
+                atomic_checkpoint(
+                    path,
+                    checkpoint_payload(agent, optimizer, frames, args, contract),
+                )
                 print(json.dumps({'event': 'checkpoint', 'frames': frames, 'path': str(path)}), flush=True)
                 next_checkpoint += args.checkpoint_interval
     finally:
         final_path = checkpoint_dir / f'ppo-v2-{frames:012d}.pt'
-        atomic_checkpoint(final_path, {
-            'agent': agent.state_dict(),
-            'optimizer': optimizer.state_dict(),
-            'frames': frames,
-            'args': vars(args),
-        })
+        atomic_checkpoint(
+            final_path,
+            checkpoint_payload(agent, optimizer, frames, args, contract),
+        )
         bridge.close()
         print(json.dumps({
             'event': 'stop',

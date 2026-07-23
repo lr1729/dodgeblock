@@ -36,7 +36,14 @@ def main():
     agent = ActorCriticNetwork().to(device)
     agent.load_state_dict(saved['agent'])
     agent.eval()
-    bridge = ParallelEnvBridge(args.workers, args.episodes // args.workers, args.seed, archive_probability=0)
+    bridge = ParallelEnvBridge(
+        args.workers,
+        args.episodes // args.workers,
+        args.seed,
+        archive_probability=0,
+        target_height=args.target_height,
+        reward_mode='target',
+    )
     packet = bridge.read()
     active = np.ones(args.episodes, dtype=bool)
     heights = np.zeros(args.episodes, np.float32)
@@ -63,8 +70,8 @@ def main():
             packet = bridge.step(actions)
             lengths[active] += 1
 
-            succeeded = active & (packet['current_heights'] >= args.target_height)
-            heights[succeeded] = packet['current_heights'][succeeded]
+            succeeded = active & packet['successes'].astype(bool)
+            heights[succeeded] = packet['heights'][succeeded]
             outcomes[succeeded] = 'success'
             active[succeeded] = False
 

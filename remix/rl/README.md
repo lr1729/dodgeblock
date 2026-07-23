@@ -2,7 +2,7 @@
 
 ## Recurrent replay agent
 
-The v2 trainer is the primary experiment. It is an R2D2-style recurrent,
+The recurrent v2 trainer is retained as an off-policy baseline. It is an R2D2-style recurrent,
 dueling, distributional Double-Q agent with prioritized sequence replay. It
 uses the authoritative deterministic JavaScript simulation and trains only on
 stable height gained, with a one-block terminal penalty to anchor death as a
@@ -70,20 +70,63 @@ tuning a machine. `--compile` is experimental and disabled by default because
 the recurrent model has several fixed sequence shapes and compilation can have
 a large cold-start cost.
 
-## PPO baseline
+## Target-policy PPO
 
-`ppo_v2.py` is the current scaled fallback after the recurrent Q agent learned
-an overly conservative greedy policy. It uses the same authoritative v2
-simulation, observations, action mask, disabled Auto Guard, and disabled
-gameplay checkpoints as `train_v2.py`, but directly optimizes a stochastic
-actor-critic policy with clipped PPO updates. The reward remains dominated by
-stable height gained; a tiny survival reward can be enabled so early policies
-receive a gradient before they can climb, but it should stay small enough that
-standing still is not competitive with gaining height.
+`ppo_v2.py` trains for reliable completion of a fixed height target. Reaching
+the target and dying are the only terminal outcomes. Potential-based height
+shaping gives local credit but telescopes to zero on a failed fresh run and one
+on a successful fresh run, so partial failure cannot become the objective.
+The undiscounted production objective (`gamma=1`) maximizes target success
+probability instead of preferring a faster, riskier completion.
+
+The trainer retains the authoritative 60 Hz primitive controls. GAE decay is
+measured in simulation world time, so Focus Aim no longer destroys credit ten
+times faster than normal play. Entropy and learning rate anneal during training,
+and a player-centered high-resolution terrain branch preserves narrow collision
+geometry alongside the coarse whole-arena representation.
+
+PPO is robustification, not trajectory discovery. First create an exact
+replayable trajectory with the snapshot frontier explorer:
 
 ```bash
-python rl/ppo_v2.py --device cuda --workers 8 --envs-per-worker 64
-python rl/evaluate_ppo_v2.py ~/dodgeblock-ppo-v2/checkpoints/latest.pt --episodes 256
+node rl/go-explore.mjs \
+  --seed 7 \
+  --target-height 10000 \
+  --output-dir ~/dodgeblock-go-explore/demos
+node rl/replay-demo.mjs ~/dodgeblock-go-explore/demos/demo-*.json.gz
+```
+
+The explorer uses coherent control options internally but expands them to the
+same primitive input stream used by the browser. Every frontier state retains
+its parent action segment, so a success produces a deterministic demonstration
+from frame zero rather than a disconnected high-altitude snapshot.
+
+Training replays the demonstration into a memory-bounded set of exact simulator
+snapshots. A competence gate expands starts farther from the target only after
+the current frontier is solved reliably. As the frontier moves backward, the
+demonstration-start probability falls from 0.8 to 0.2 and unrevealed future
+randomness rises to 100%; the remaining episodes always start from fresh seeds.
+The final mixture therefore retains useful hard states without retaining the
+demonstration's future sequence.
+
+Curriculum state deliberately restarts at the easiest frontier after a process
+restart. A resumed policy normally re-expands it quickly, while elapsed wall
+time can never masquerade as measured competence. PPO checkpoints validate the
+objective, architecture, demonstration hash, and schedule before loading.
+
+```bash
+python rl/ppo_v2.py \
+  --device cuda \
+  --workers 8 \
+  --envs-per-worker 64 \
+  --demonstration ~/dodgeblock-go-explore/demos/demo-7-10k.json.gz \
+  --archive-probability 0
+python rl/evaluate_ppo_v2.py \
+  ~/dodgeblock-ppo-target-v3/checkpoints/latest.pt \
+  --episodes 256
+
+DODGEBLOCK_TEST_DEMONSTRATION=~/dodgeblock-go-explore/demos/demo-7-10k.json.gz \
+  npm run test:rl-python
 ```
 
 The historical feed-forward PPO implementation is retained separately as an

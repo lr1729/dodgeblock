@@ -1,5 +1,5 @@
 [Unit]
-Description=DodgeBlock PPO v2 training on RTX 3090
+Description=DodgeBlock target-policy PPO training on RTX 3090
 After=network.target
 
 [Service]
@@ -13,8 +13,18 @@ CPUWeight=40
 Environment=PYTHONUNBUFFERED=1
 Environment=CUDA_VISIBLE_DEVICES=1
 Environment=DODGEBLOCK_PYTHON=%h/envs/dodgeblock-rl/bin/python
-Environment=DODGEBLOCK_CHECKPOINT_DIR=%h/dodgeblock-ppo-v2/checkpoints
-Environment=DODGEBLOCK_TOTAL_FRAMES=100000000
+Environment=DODGEBLOCK_CHECKPOINT_DIR=%h/dodgeblock-ppo-target-v3/checkpoints
+Environment=DODGEBLOCK_TOTAL_FRAMES=120000000
+Environment=DODGEBLOCK_CHECKPOINT_INTERVAL=2500000
+Environment=DODGEBLOCK_ARCHIVE_PROBABILITY=0
+Environment=DODGEBLOCK_GAMMA=1.0
+Environment=DODGEBLOCK_REWARD_MODE=target
+Environment=DODGEBLOCK_TARGET_HEIGHT=10000
+Environment=DODGEBLOCK_DEMONSTRATIONS=%h/dodgeblock-go-explore/demos/demo-7-10k.json.gz
+Environment=DODGEBLOCK_DEMONSTRATION_PROBABILITY=0.8
+Environment=DODGEBLOCK_DEMONSTRATION_PROBABILITY_END=0.2
+Environment=DODGEBLOCK_DEMONSTRATION_SNAPSHOT_CAPACITY=256
+Environment=DODGEBLOCK_DEMONSTRATION_RANDOMIZE_PROBABILITY=1
 Environment=DODGEBLOCK_EVAL_AFTER_TRAIN=1
 Environment=DODGEBLOCK_EVAL_EPISODES=256
 CPUAffinity=0-5 7-15 17-19
