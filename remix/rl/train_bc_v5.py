@@ -38,6 +38,15 @@ def arguments():
     parser.add_argument('--dataset', required=True)
     parser.add_argument('--train-seeds', default='1-12')
     parser.add_argument('--validation-seeds', default='13-16')
+    parser.add_argument('--correction-dataset')
+    parser.add_argument('--correction-train-seeds', default='')
+    parser.add_argument('--correction-validation-seeds', default='')
+    parser.add_argument('--correction-fraction', type=float, default=0.0)
+    parser.add_argument(
+        '--selection-metric',
+        choices=('validation', 'decision_validation', 'correction_validation'),
+        default='decision_validation',
+    )
     parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--batch-size', type=int, default=4096)
     parser.add_argument('--validation-batch-size', type=int, default=4096)
@@ -129,6 +138,8 @@ def checkpoint_payload(
     args,
     train,
     validation,
+    correction_train,
+    correction_validation,
     best_validation_loss,
     epochs_without_improvement,
 ):
@@ -146,6 +157,12 @@ def checkpoint_payload(
         'dataset_contract': {
             'training': train.contract(),
             'validation': validation.contract(),
+            'correction_training': (
+                correction_train.contract() if correction_train else []
+            ),
+            'correction_validation': (
+                correction_validation.contract() if correction_validation else []
+            ),
         },
     }
 
@@ -156,9 +173,32 @@ def main():
         raise ValueError('--initialize-from and --weights-from are mutually exclusive')
     train_seeds = parse_seeds(args.train_seeds)
     validation_seeds = parse_seeds(args.validation_seeds)
+    correction_train_seeds = parse_seeds(args.correction_train_seeds)
+    correction_validation_seeds = parse_seeds(args.correction_validation_seeds)
     overlap = set(train_seeds) & set(validation_seeds)
     if overlap:
         raise ValueError(f'training and validation seeds overlap: {sorted(overlap)}')
+    correction_overlap = set(correction_train_seeds) & set(
+        correction_validation_seeds
+    )
+    if correction_overlap:
+        raise ValueError(
+            f'correction training and validation seeds overlap: '
+            f'{sorted(correction_overlap)}'
+        )
+    if not 0 <= args.correction_fraction <= 1:
+        raise ValueError('--correction-fraction must be between zero and one')
+    if args.correction_fraction > 0 and not correction_train_seeds:
+        raise ValueError(
+            '--correction-fraction requires --correction-train-seeds'
+        )
+    if (
+        args.selection_metric == 'correction_validation' and
+        not correction_validation_seeds
+    ):
+        raise ValueError(
+            'correction_validation selection requires held-out correction seeds'
+        )
     if args.epochs <= 0 or args.batch_size <= 0:
         raise ValueError('epochs and batch size must be positive')
 
@@ -175,6 +215,15 @@ def main():
 
     train = DemoDataset(args.dataset, train_seeds)
     validation = DemoDataset(args.dataset, validation_seeds)
+    correction_root = args.correction_dataset or args.dataset
+    correction_train = (
+        DemoDataset(correction_root, correction_train_seeds)
+        if correction_train_seeds else None
+    )
+    correction_validation = (
+        DemoDataset(correction_root, correction_validation_seeds)
+        if correction_validation_seeds else None
+    )
     decision_validation = validation.sample(
         min(65_536, validation.frames),
         np.random.default_rng(args.seed ^ 0xD3C1_5105),
@@ -228,6 +277,16 @@ def main():
         'validation_seeds': validation_seeds,
         'training_frames': train.frames,
         'validation_frames': validation.frames,
+        'correction_training_seeds': correction_train_seeds,
+        'correction_validation_seeds': correction_validation_seeds,
+        'correction_training_frames': (
+            correction_train.frames if correction_train else 0
+        ),
+        'correction_validation_frames': (
+            correction_validation.frames if correction_validation else 0
+        ),
+        'correction_fraction': args.correction_fraction,
+        'selection_metric': args.selection_metric,
         'steps_per_epoch': steps_per_epoch,
         'focus_positive_weight': args.focus_positive_weight,
         'decision_sample_weights': DECISION_SAMPLE_WEIGHTS,
@@ -243,8 +302,21 @@ def main():
         agent.train()
         train_metrics = []
         train_weights = []
+        demo_train_metrics = []
+        demo_train_weights = []
+        correction_train_metrics = []
+        correction_train_weights = []
         for _step in range(steps_per_epoch):
-            batch = train.sample(args.batch_size, rng)
+            use_correction = (
+                correction_train is not None and
+                rng.random() < args.correction_fraction
+            )
+            source = correction_train if use_correction else train
+            batch = source.sample(
+                args.batch_size,
+                rng,
+                decision_weighted=not use_correction,
+            )
             observation, actions, targets = tensor_demo_batch(batch, device)
             with autocast:
                 logits, _value = agent(observation)
@@ -263,6 +335,12 @@ def main():
             values['grad_norm'] = float(grad_norm)
             train_metrics.append(values)
             train_weights.append(len(actions))
+            if use_correction:
+                correction_train_metrics.append(values)
+                correction_train_weights.append(len(actions))
+            else:
+                demo_train_metrics.append(values)
+                demo_train_weights.append(len(actions))
             samples += len(actions)
 
         validation_metrics, validation_by_seed = evaluate_dataset(
@@ -281,6 +359,23 @@ def main():
             autocast,
             args.focus_positive_weight,
         )
+        correction_validation_metrics = (
+            evaluate_dataset(
+                agent,
+                correction_validation,
+                args.validation_batch_size,
+                device,
+                autocast,
+                args.focus_positive_weight,
+            )[0]
+            if correction_validation else None
+        )
+        selection_metrics = {
+            'validation': validation_metrics,
+            'decision_validation': decision_validation_metrics,
+            'correction_validation': correction_validation_metrics,
+        }
+        selection_loss = selection_metrics[args.selection_metric]['loss']
         metrics = {
             'event': 'epoch',
             'epoch': epoch,
@@ -288,14 +383,25 @@ def main():
             'learning_rate': learning_rate,
             'elapsed_seconds': round(time.time() - started, 1),
             'training': aggregate(train_metrics, train_weights),
+            'demo_training': (
+                aggregate(demo_train_metrics, demo_train_weights)
+                if demo_train_metrics else None
+            ),
+            'correction_training': (
+                aggregate(correction_train_metrics, correction_train_weights)
+                if correction_train_metrics else None
+            ),
             'validation': validation_metrics,
             'decision_validation': decision_validation_metrics,
+            'correction_validation': correction_validation_metrics,
+            'selection_metric': args.selection_metric,
+            'selection_loss': selection_loss,
             'validation_by_seed': validation_by_seed,
         }
         print(json.dumps(metrics), flush=True)
-        improved = decision_validation_metrics['loss'] < best_validation_loss
+        improved = selection_loss < best_validation_loss
         if improved:
-            best_validation_loss = decision_validation_metrics['loss']
+            best_validation_loss = selection_loss
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
@@ -307,6 +413,8 @@ def main():
             args,
             train,
             validation,
+            correction_train,
+            correction_validation,
             best_validation_loss,
             epochs_without_improvement,
         )
@@ -325,6 +433,7 @@ def main():
                 'event': 'early_stop',
                 'epoch': epoch,
                 'best_validation_loss': best_validation_loss,
+                'selection_metric': args.selection_metric,
                 'patience': args.early_stop_patience,
             }), flush=True)
             break

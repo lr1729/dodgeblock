@@ -182,6 +182,10 @@ def main():
     )
     assert torch.isfinite(sticky_loss)
     assert 0 <= sticky_metrics['repeat_target_fraction'] <= 1
+    assert sticky_metrics['focus_loss'] > 0
+    assert sticky_metrics['vertical_loss'] > 0
+    assert sticky_metrics['horizontal_loss'] > 0
+    assert torch.isfinite(sticky_metrics['joint_accuracy_lift_over_repeat'])
 
     with tempfile.TemporaryDirectory() as temporary:
         synthetic_bank = Path(temporary) / 'synthetic-bank.json.gz'

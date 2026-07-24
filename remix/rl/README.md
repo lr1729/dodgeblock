@@ -192,6 +192,39 @@ should start only after the distilled policy produces meaningful closed-loop
 fresh behavior. If BC has no fresh target completions, collect policy deaths
 and generate search corrections before relying on target reward.
 
+Raw Go-Explore actions are a weak policy target: its option proposals are
+state-independent and competence comes from snapshot retries. Keep successful
+trajectories as a low-level initialization and source of verified simulator
+states, not as the dominant decision signal. `counterfactual-teacher.mjs`
+turns a verified successful continuation into causal soft labels by replacing
+each candidate action under the same known-successful suffix and matched
+future randomizations:
+
+```bash
+node rl/counterfactual-teacher.mjs \
+  --demo /path/to/verified-demo.json.gz \
+  --output-dir ~/dodgeblock-counterfactual-v5 \
+  --shard-seed 4001 --horizon 360 --futures 2
+```
+
+Correction shards are sampled separately so a small causal dataset can
+dominate optimization without pretending it has the same role as trajectory
+frames. Hold out correction sources independently and select checkpoints on
+their loss:
+
+```bash
+export DODGEBLOCK_CORRECTION_DATASET="$HOME/dodgeblock-counterfactual-v5"
+export DODGEBLOCK_CORRECTION_TRAIN_SEEDS="4001-4010"
+export DODGEBLOCK_CORRECTION_VALIDATION_SEEDS="4011-4012"
+export DODGEBLOCK_CORRECTION_FRACTION=0.75
+export DODGEBLOCK_BC_SELECTION_METRIC=correction_validation
+rl/run-bc-v5.sh
+```
+
+The trainer reports `joint_accuracy_lift_over_repeat`; a model matching the
+repeat-previous baseline has not learned state-dependent decisions regardless
+of its raw frame accuracy. PPO remains gated on fresh closed-loop rollouts.
+
 The cold-start correction stage searches from on-policy rewind states against
 the original future and two common reseeded futures. It branches all 18
 actions over three matched continuation plans, averages each action's return,

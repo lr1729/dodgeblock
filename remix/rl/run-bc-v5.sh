@@ -10,6 +10,18 @@ extra_args=()
 if [[ -n "${DODGEBLOCK_BC_WEIGHTS_FROM:-}" ]]; then
   extra_args+=(--weights-from "$DODGEBLOCK_BC_WEIGHTS_FROM")
 fi
+if [[ -n "${DODGEBLOCK_CORRECTION_TRAIN_SEEDS:-}" ]]; then
+  extra_args+=(
+    --correction-dataset "${DODGEBLOCK_CORRECTION_DATASET:-$dataset}"
+    --correction-train-seeds "$DODGEBLOCK_CORRECTION_TRAIN_SEEDS"
+    --correction-fraction "${DODGEBLOCK_CORRECTION_FRACTION:-0.75}"
+  )
+fi
+if [[ -n "${DODGEBLOCK_CORRECTION_VALIDATION_SEEDS:-}" ]]; then
+  extra_args+=(
+    --correction-validation-seeds "$DODGEBLOCK_CORRECTION_VALIDATION_SEEDS"
+  )
+fi
 
 exec "$python_bin" "$root/rl/train_bc_v5.py" \
   --dataset "$dataset" \
@@ -23,6 +35,7 @@ exec "$python_bin" "$root/rl/train_bc_v5.py" \
   --weight-decay "${DODGEBLOCK_BC_WEIGHT_DECAY:-0.00001}" \
   --focus-positive-weight "${DODGEBLOCK_BC_FOCUS_WEIGHT:-1.0}" \
   --early-stop-patience "${DODGEBLOCK_BC_EARLY_STOP_PATIENCE:-5}" \
+  --selection-metric "${DODGEBLOCK_BC_SELECTION_METRIC:-decision_validation}" \
   --device "${DODGEBLOCK_DEVICE:-cuda}" \
   --checkpoint-dir "$checkpoint_dir" \
   "${extra_args[@]}"

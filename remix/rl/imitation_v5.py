@@ -122,12 +122,23 @@ def autoregressive_imitation_loss(
         targets = F.one_hot(actions, num_classes=18).to(focus_logprobs.dtype)
     else:
         targets = targets.to(focus_logprobs.dtype)
+    joint_targets = targets.reshape(-1, 2, 3, 3)
+    focus_targets = joint_targets.sum(dim=(-2, -1))
+    focus_nll = -(focus_targets * focus_logprobs).sum(dim=-1)
+    focus_sample_weights = (
+        focus_targets[:, 0] +
+        focus_positive_weight * focus_targets[:, 1]
+    )
+    focus_loss = (
+        focus_nll * focus_sample_weights
+    ).sum() / focus_sample_weights.sum().clamp_min(1)
+    vertical_loss = -(
+        joint_targets * vertical_logprobs.unsqueeze(-1)
+    ).sum(dim=(-3, -2, -1)).mean()
+    horizontal_loss = -(
+        joint_targets * horizontal_logprobs
+    ).sum(dim=(-3, -2, -1)).mean()
     if sticky:
-        focus_targets = targets.reshape(-1, 2, 9).sum(dim=-1)
-        focus_sample_weights = (
-            focus_targets[:, 0] +
-            focus_positive_weight * focus_targets[:, 1]
-        )
         per_sample_loss = -(targets * joint_logprobs).sum(dim=-1)
         loss = (
             per_sample_loss * focus_sample_weights
@@ -137,26 +148,7 @@ def autoregressive_imitation_loss(
             (1 - repeat_targets) * repeat_logprobs[:, 0] +
             repeat_targets * repeat_logprobs[:, 1]
         ).mean()
-        focus_loss = -(focus_targets * focus_logprobs).sum(dim=-1).mean()
-        vertical_loss = torch.zeros_like(focus_loss)
-        horizontal_loss = torch.zeros_like(focus_loss)
     else:
-        joint_targets = targets.reshape(-1, 2, 3, 3)
-        focus_targets = joint_targets.sum(dim=(-2, -1))
-        focus_nll = -(focus_targets * focus_logprobs).sum(dim=-1)
-        focus_sample_weights = (
-            focus_targets[:, 0] +
-            focus_positive_weight * focus_targets[:, 1]
-        )
-        focus_loss = (
-            focus_nll * focus_sample_weights
-        ).sum() / focus_sample_weights.sum().clamp_min(1)
-        vertical_loss = -(
-            joint_targets * vertical_logprobs.unsqueeze(-1)
-        ).sum(dim=(-3, -2, -1)).mean()
-        horizontal_loss = -(
-            joint_targets * horizontal_logprobs
-        ).sum(dim=(-3, -2, -1)).mean()
         loss = focus_loss + vertical_loss + horizontal_loss
     with torch.no_grad():
         if not sticky:
@@ -199,4 +191,7 @@ def autoregressive_imitation_loss(
         metrics['repeat_prediction_fraction'] = (
             joint_logprobs.argmax(dim=-1) == previous
         ).float().mean()
+        metrics['joint_accuracy_lift_over_repeat'] = (
+            metrics['joint_accuracy'] - metrics['repeat_target_fraction']
+        )
     return loss, metrics
