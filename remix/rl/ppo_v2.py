@@ -14,7 +14,11 @@ from torch.distributions import Categorical
 
 from cell_bank import CellBankCoordinator, FRESH_CELL_ID
 from demo_dataset import DemoDataset
-from imitation_v5 import autoregressive_imitation_loss, tensor_demo_batch
+from imitation_v5 import (
+    autoregressive_imitation_loss,
+    sticky_joint_logprobs,
+    tensor_demo_batch,
+)
 from r2d2 import (
     ACTION_COUNT,
     FALLING_COUNT,
@@ -34,6 +38,7 @@ from trajectory_bank import TrajectoryStartCoordinator
 
 TRAINING_CONTRACT_VERSION = 2
 MODEL_ARCHITECTURE = 'ppo-v4-autoregressive-cell-bank-1'
+STICKY_MODEL_ARCHITECTURE = 'ppo-v5-sticky-autoregressive-1'
 DEATH_CAUSE_NAMES = {0: 'success', 1: 'fell', 2: 'squished'}
 PHASE_NAMES = {0: 'unknown', 1: 'opening', 2: 'calm', 3: 'build', 4: 'surge', 5: 'release'}
 
@@ -73,7 +78,17 @@ def focus_action_mask(observation):
 
 class AutoregressiveActionDistribution:
     def __init__(self, logits, observation):
-        focus_logits, vertical_logits, horizontal_logits = logits
+        self.sticky = len(logits) == 4
+        if self.sticky:
+            (
+                self.joint_logprobs,
+                self.repeat_logprobs,
+                _previous,
+            ) = sticky_joint_logprobs(logits, observation)
+            repeat_logits, focus_logits, vertical_logits, horizontal_logits = logits
+            del repeat_logits
+        else:
+            focus_logits, vertical_logits, horizontal_logits = logits
         self.focus = Categorical(
             logits=focus_logits.masked_fill(~focus_action_mask(observation), -1e9)
         )
@@ -82,11 +97,12 @@ class AutoregressiveActionDistribution:
         focus_logprob = self.focus.logits
         vertical_logprob = torch.log_softmax(vertical_logits, dim=-1)
         horizontal_logprob = torch.log_softmax(horizontal_logits, dim=-1)
-        self.joint_logprobs = (
-            focus_logprob.unsqueeze(-1).unsqueeze(-1) +
-            vertical_logprob.unsqueeze(-1) +
-            horizontal_logprob
-        ).flatten(start_dim=-3)
+        if not self.sticky:
+            self.joint_logprobs = (
+                focus_logprob.unsqueeze(-1).unsqueeze(-1) +
+                vertical_logprob.unsqueeze(-1) +
+                horizontal_logprob
+            ).flatten(start_dim=-3)
         self.joint = Categorical(logits=self.joint_logprobs)
 
     def sample(self):
@@ -112,6 +128,10 @@ class AutoregressiveActionDistribution:
             horizontal_entropy
         ).sum(dim=(-2, -1))
         return {
+            'repeat': (
+                -(self.repeat_logprobs.exp() * self.repeat_logprobs).sum(dim=-1)
+                if self.sticky else torch.zeros_like(self.focus.entropy())
+            ),
             'focus': self.focus.entropy(),
             'vertical': vertical_entropy,
             'horizontal': horizontal_entropy,
@@ -219,6 +239,25 @@ class ActorCriticNetwork(nn.Module):
         return logits, self.critic(hidden).squeeze(-1)
 
 
+class StickyActorCriticNetwork(ActorCriticNetwork):
+    def __init__(self):
+        super().__init__()
+        self.repeat_actor = nn.Linear(384, 2)
+        nn.init.zeros_(self.repeat_actor.weight)
+        nn.init.zeros_(self.repeat_actor.bias)
+
+    def forward(self, observation):
+        hidden = self.encode(observation)
+        batch_shape = hidden.shape[:-1]
+        logits = (
+            self.repeat_actor(hidden),
+            self.focus_actor(hidden),
+            self.vertical_actor(hidden).reshape(*batch_shape, 2, 3),
+            self.horizontal_actor(hidden).reshape(*batch_shape, 2, 3, 3),
+        )
+        return logits, self.critic(hidden).squeeze(-1)
+
+
 def arguments():
     parser = argparse.ArgumentParser(description='Train a PPO actor-critic on DodgeBlock v2.')
     parser.add_argument('--workers', type=int, default=8)
@@ -257,6 +296,7 @@ def arguments():
     parser.add_argument('--demo-coef-start', type=float, default=0.0)
     parser.add_argument('--demo-coef-end', type=float, default=0.0)
     parser.add_argument('--demo-focus-positive-weight', type=float, default=1.0)
+    parser.add_argument('--sticky-action-head', action='store_true')
     parser.add_argument('--checkpoint-dir', default=str(Path.home() / 'dodgeblock-ppo-v2/checkpoints'))
     parser.add_argument('--checkpoint-interval', type=int, default=5_000_000)
     parser.add_argument('--log-interval', type=float, default=20.0)
@@ -327,7 +367,10 @@ def atomic_checkpoint(path, payload):
 def training_contract(args):
     contract = {
         'version': TRAINING_CONTRACT_VERSION,
-        'model_architecture': MODEL_ARCHITECTURE,
+        'model_architecture': (
+            STICKY_MODEL_ARCHITECTURE
+            if args.sticky_action_head else MODEL_ARCHITECTURE
+        ),
         'action_count': ACTION_COUNT,
         'terrain_shape': [TERRAIN_ROWS, TERRAIN_COLS],
         'target_height': args.target_height,
@@ -376,6 +419,7 @@ def checkpoint_payload(
         'agent': agent.state_dict(),
         'optimizer': optimizer.state_dict(),
         'frames': frames,
+        'model_architecture': contract['model_architecture'],
         'args': vars(args),
         'training_contract': contract,
         'cell_bank_contract': bank_contract,
@@ -479,7 +523,11 @@ def main():
     )
     demo_contract = demo_dataset.contract() if demo_dataset else None
     demo_rng = np.random.default_rng(args.seed ^ 0xD3A0_5EED)
-    agent = ActorCriticNetwork().to(device)
+    network_class = (
+        StickyActorCriticNetwork
+        if args.sticky_action_head else ActorCriticNetwork
+    )
+    agent = network_class().to(device)
     optimizer = torch.optim.AdamW(agent.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, eps=1e-5)
     frames = 0
     if args.initialize_from:
@@ -775,6 +823,7 @@ def main():
             focus_entropies = []
             vertical_entropies = []
             horizontal_entropies = []
+            repeat_entropies = []
             approx_kls = []
             clip_fracs = []
             grad_norms = []
@@ -790,6 +839,7 @@ def main():
                         distribution = AutoregressiveActionDistribution(logits, observation)
                         new_logprob = distribution.log_prob(flat_actions[mb].to(device, non_blocking=True))
                         component_entropy = distribution.entropies()
+                        repeat_entropy = component_entropy['repeat'].mean()
                         focus_entropy = component_entropy['focus'].mean()
                         vertical_entropy = component_entropy['vertical'].mean()
                         horizontal_entropy = component_entropy['horizontal'].mean()
@@ -811,7 +861,9 @@ def main():
                             args.value_coef * value_loss -
                             focus_entropy_coef * focus_entropy -
                             direction_entropy_coef * (
-                                vertical_entropy + horizontal_entropy
+                                repeat_entropy +
+                                vertical_entropy +
+                                horizontal_entropy
                             )
                         )
                         imitation_loss = None
@@ -820,7 +872,7 @@ def main():
                                 args.demo_minibatch,
                                 demo_rng,
                             )
-                            demo_observation, demo_actions = tensor_demo_batch(
+                            demo_observation, demo_actions, demo_targets = tensor_demo_batch(
                                 demo_batch,
                                 device,
                             )
@@ -830,6 +882,7 @@ def main():
                                     demo_logits,
                                     demo_observation,
                                     demo_actions,
+                                    targets=demo_targets,
                                     focus_positive_weight=(
                                         args.demo_focus_positive_weight
                                     ),
@@ -848,6 +901,7 @@ def main():
                     focus_entropies.append(float(focus_entropy.item()))
                     vertical_entropies.append(float(vertical_entropy.item()))
                     horizontal_entropies.append(float(horizontal_entropy.item()))
+                    repeat_entropies.append(float(repeat_entropy.item()))
                     approx_kls.append(float(approx_kl.item()))
                     clip_fracs.append(float(clip_frac.item()))
                     grad_norms.append(float(grad_norm))
@@ -862,6 +916,7 @@ def main():
                 'focus_entropy': np.mean(focus_entropies),
                 'vertical_entropy': np.mean(vertical_entropies),
                 'horizontal_entropy': np.mean(horizontal_entropies),
+                'repeat_entropy': np.mean(repeat_entropies),
                 'kl': np.mean(approx_kls),
                 'clip_frac': np.mean(clip_fracs),
                 'grad_norm': np.mean(grad_norms),
@@ -898,7 +953,12 @@ def main():
                         component: round(float(np.mean([
                             item[f'{component}_entropy'] for item in recent
                         ])), 3)
-                        for component in ('focus', 'vertical', 'horizontal')
+                        for component in (
+                            'repeat',
+                            'focus',
+                            'vertical',
+                            'horizontal',
+                        )
                     },
                     'kl': round(float(np.mean([item['kl'] for item in recent])), 5),
                     'clip_frac': round(float(np.mean([item['clip_frac'] for item in recent])), 3),

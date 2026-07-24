@@ -27,6 +27,7 @@ from imitation_v5 import autoregressive_imitation_loss  # noqa: E402
 from ppo_v2 import (  # noqa: E402
     ActorCriticNetwork,
     AutoregressiveActionDistribution,
+    StickyActorCriticNetwork,
     packet_observation,
     tensor_observation as ppo_tensor_observation,
 )
@@ -117,6 +118,20 @@ def main():
     assert values.shape == (2,)
     assert all(torch.all(torch.isfinite(component)) for component in logits)
     assert torch.all(torch.isfinite(values))
+    sticky_ppo = StickyActorCriticNetwork()
+    with torch.no_grad():
+        sticky_logits, sticky_values = sticky_ppo(ppo_observation)
+        sticky_distribution = AutoregressiveActionDistribution(
+            sticky_logits,
+            ppo_observation,
+        )
+    assert sticky_logits[0].shape == (2, 2)
+    assert sticky_distribution.joint_logprobs.shape == (2, 18)
+    assert torch.allclose(
+        sticky_distribution.joint_logprobs.exp().sum(dim=-1),
+        torch.ones(2),
+    )
+    assert sticky_values.shape == (2,)
     conditional_logits = (
         torch.tensor([[0.0, 3.0], [3.0, 0.0]]),
         torch.tensor([
@@ -148,6 +163,25 @@ def main():
     )
     assert torch.isfinite(imitation_loss)
     assert imitation_metrics['joint_accuracy'] == 1
+    soft_targets = torch.zeros(2, 18)
+    soft_targets[0, [4, 16]] = torch.tensor([0.75, 0.25])
+    soft_targets[1, [2, 5]] = torch.tensor([0.4, 0.6])
+    soft_loss, soft_metrics = autoregressive_imitation_loss(
+        conditional_logits,
+        imitation_observation,
+        imitation_actions,
+        targets=soft_targets,
+    )
+    assert torch.isfinite(soft_loss)
+    assert 0 < soft_metrics['focus_target_fraction'] < 1
+    sticky_loss, sticky_metrics = autoregressive_imitation_loss(
+        sticky_logits,
+        imitation_observation,
+        imitation_actions,
+        targets=soft_targets,
+    )
+    assert torch.isfinite(sticky_loss)
+    assert 0 <= sticky_metrics['repeat_target_fraction'] <= 1
 
     with tempfile.TemporaryDirectory() as temporary:
         synthetic_bank = Path(temporary) / 'synthetic-bank.json.gz'

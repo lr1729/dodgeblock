@@ -27,6 +27,7 @@ ARRAY_SPECS = {
     'state': (np.dtype('<f4'), (STATE_SIZE,)),
     'actions': (np.dtype('u1'), ()),
 }
+TARGET_SHAPE = (18,)
 
 DECISION_SAMPLE_WEIGHTS = {
     'uniform': 0.40,
@@ -47,6 +48,7 @@ class DemoShard:
     manifest: dict
     root: Path
     sample_pools: dict
+    targets: np.ndarray | None
 
 
 def _read_array(root, manifest, key, frames):
@@ -93,6 +95,17 @@ class DemoDataset:
                 'focus': np.flatnonzero(actions >= 9),
                 'initial': np.arange(min(frames, INITIAL_FRAMES), dtype=np.int64),
             }
+            targets = None
+            if 'targets' in manifest['files']:
+                file_info = manifest['files']['targets']
+                with gzip.open(shard_root / file_info['file'], 'rb') as source:
+                    data = source.read()
+                if hashlib.sha256(data).hexdigest() != file_info['sha256']:
+                    raise ValueError(f'{shard_root}: targets checksum mismatch')
+                targets = np.frombuffer(data, dtype='<f4')
+                if targets.size != frames * TARGET_SHAPE[0]:
+                    raise ValueError(f'{shard_root}: invalid soft-target shape')
+                targets = targets.reshape(frames, *TARGET_SHAPE).copy()
             self.shards.append(DemoShard(
                 seed,
                 frames,
@@ -100,6 +113,7 @@ class DemoDataset:
                 manifest,
                 shard_root,
                 sample_pools,
+                targets,
             ))
         self.frames = sum(shard.frames for shard in self.shards)
 
@@ -110,7 +124,8 @@ class DemoDataset:
             'demo_sha256': shard.manifest['demo']['sha256'],
             'files': {
                 key: shard.manifest['files'][key]['sha256']
-                for key in ARRAY_SPECS
+                for key in shard.manifest['files']
+                if key in ARRAY_SPECS or key == 'targets'
             },
         } for shard in self.shards]
 
@@ -120,6 +135,7 @@ class DemoDataset:
             key: np.empty((size, *trailing), dtype=dtype)
             for key, (dtype, trailing) in ARRAY_SPECS.items()
         }
+        result['targets'] = np.zeros((size, *TARGET_SHAPE), dtype=np.float32)
         categories = tuple(DECISION_SAMPLE_WEIGHTS)
         probabilities = np.asarray(
             [DECISION_SAMPLE_WEIGHTS[key] for key in categories],
@@ -151,13 +167,30 @@ class DemoDataset:
                 )
             for key in ARRAY_SPECS:
                 result[key][output_indices] = shard.arrays[key][frame_indices]
+            if shard.targets is None:
+                result['targets'][
+                    output_indices,
+                    shard.arrays['actions'][frame_indices],
+                ] = 1
+            else:
+                result['targets'][output_indices] = shard.targets[frame_indices]
         return result
 
     def iter_batches(self, size):
         for shard in self.shards:
             for start in range(0, shard.frames, size):
                 stop = min(shard.frames, start + size)
-                yield {
+                batch = {
                     key: values[start:stop]
                     for key, values in shard.arrays.items()
-                }, shard.seed
+                }
+                if shard.targets is None:
+                    targets = np.zeros((stop - start, *TARGET_SHAPE), np.float32)
+                    targets[
+                        np.arange(stop - start),
+                        shard.arrays['actions'][start:stop],
+                    ] = 1
+                    batch['targets'] = targets
+                else:
+                    batch['targets'] = shard.targets[start:stop]
+                yield batch, shard.seed

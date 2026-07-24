@@ -33,6 +33,8 @@ const archiveCapacity = Math.max(128, Math.floor(numberArg('--archive-capacity',
 const checkpointInterval = Math.max(1, Math.floor(numberArg('--checkpoint-interval', 50_000)));
 const outputDir = path.resolve(stringArg('--output-dir', 'rl/go-explore-output'));
 const resumePath = stringArg('--resume', '');
+const startCasePath = stringArg('--start-case', '');
+const startRewind = Math.max(1, Math.floor(numberArg('--start-rewind', 120)));
 const rules = Object.freeze({ autoGuard: false, checkpoints: false });
 const rng = new Rng(searchSeed);
 
@@ -41,6 +43,8 @@ let bestHeight = 0;
 let additions = 0;
 const archive = new Map();
 let startIteration = 1;
+let initialSnapshot = null;
+let initialPreviousAction = 0;
 
 function stable(sim) {
   const player = sim.player;
@@ -216,7 +220,7 @@ function reconstructActions(entry, tail = []) {
 function writeDemonstration(entry, tail, sim, iteration) {
   const actions = reconstructActions(entry, tail);
   const payload = {
-    version: 1,
+    version: initialSnapshot ? 2 : 1,
     seed,
     searchSeed,
     targetHeight,
@@ -225,6 +229,8 @@ function writeDemonstration(entry, tail, sim, iteration) {
     iteration,
     finalHash: sim.hash(),
     actions: actions.toString('base64'),
+    initialSnapshot,
+    initialPreviousAction,
   };
   const filename = `demo-${seed}-${Math.round(sim.height)}-${iteration}.json.gz`;
   const target = path.join(outputDir, filename);
@@ -232,6 +238,27 @@ function writeDemonstration(entry, tail, sim, iteration) {
   fs.writeFileSync(temporary, zlib.gzipSync(JSON.stringify(payload)));
   fs.renameSync(temporary, target);
   return target;
+}
+
+function loadStartCase(filename, rewind) {
+  const deathCase = JSON.parse(zlib.gunzipSync(fs.readFileSync(filename)));
+  if (deathCase.version !== 2) {
+    throw new Error('Go-Explore start cases require death history version 2');
+  }
+  const actions = [...Buffer.from(deathCase.history.actions, 'base64')];
+  if (rewind > actions.length) {
+    throw new Error(`start rewind ${rewind} exceeds ${actions.length} captured actions`);
+  }
+  const prefixLength = actions.length - rewind;
+  const sim = new Sim(deathCase.history.snapshot.seed, { rules });
+  sim.restore(deathCase.history.snapshot);
+  let previousAction = deathCase.history.previousAction;
+  for (const action of actions.slice(0, prefixLength)) {
+    sim.step(heldActionInput(action, previousAction));
+    previousAction = action;
+    if (sim.dead) throw new Error('start case dies before its rewind point');
+  }
+  return { sim, previousAction };
 }
 
 function writeStatus(iteration, started) {
@@ -321,8 +348,17 @@ function writeSearchCheckpoint(iteration) {
 }
 
 fs.mkdirSync(outputDir, { recursive: true });
-const initial = new Sim(seed, { rules });
-const root = addCell(initial, 0, null, [], true);
+if (startCasePath && resumePath) {
+  throw new Error('--start-case and --resume are mutually exclusive');
+}
+const start = startCasePath
+  ? loadStartCase(startCasePath, startRewind)
+  : { sim: new Sim(seed, { rules }), previousAction: 0 };
+if (startCasePath) {
+  initialSnapshot = start.sim.snapshot();
+  initialPreviousAction = start.previousAction;
+}
+const root = addCell(start.sim, start.previousAction, null, [], true);
 if (resumePath) {
   const payload = JSON.parse(zlib.gunzipSync(fs.readFileSync(resumePath)));
   if (

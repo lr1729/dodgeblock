@@ -39,6 +39,7 @@ args=(
   --demo-coef-start "${DODGEBLOCK_DEMO_COEF_START:-0.1}"
   --demo-coef-end "${DODGEBLOCK_DEMO_COEF_END:-0.01}"
   --demo-focus-positive-weight "${DODGEBLOCK_DEMO_FOCUS_WEIGHT:-1.0}"
+  --sticky-action-head
   --checkpoint-interval "${DODGEBLOCK_CHECKPOINT_INTERVAL:-2500000}"
 )
 

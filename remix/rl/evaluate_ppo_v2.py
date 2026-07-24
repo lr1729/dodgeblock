@@ -9,6 +9,8 @@ from evaluate_v2 import ACTION_NAMES, bootstrap_interval
 from ppo_v2 import (
     ActorCriticNetwork,
     AutoregressiveActionDistribution,
+    STICKY_MODEL_ARCHITECTURE,
+    StickyActorCriticNetwork,
     packet_observation,
     tensor_observation,
 )
@@ -38,7 +40,12 @@ def main():
     torch.backends.cudnn.allow_tf32 = True
     torch.backends.cudnn.benchmark = True
     saved = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    agent = ActorCriticNetwork().to(device)
+    network_class = (
+        StickyActorCriticNetwork
+        if saved.get('model_architecture') == STICKY_MODEL_ARCHITECTURE
+        else ActorCriticNetwork
+    )
+    agent = network_class().to(device)
     agent.load_state_dict(saved['agent'])
     agent.eval()
     bridge = ParallelEnvBridge(

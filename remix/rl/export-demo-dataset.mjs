@@ -86,7 +86,9 @@ function copyObservation(target, frame, observation) {
 function exportDemo(filename, outputDir, snapshotInterval) {
   const compressed = fs.readFileSync(filename);
   const payload = JSON.parse(zlib.gunzipSync(compressed));
-  if (payload.version !== 1) throw new Error(`unsupported demo version in ${filename}`);
+  if (![1, 2].includes(payload.version)) {
+    throw new Error(`unsupported demo version in ${filename}`);
+  }
   const actions = Buffer.from(payload.actions, 'base64');
   if (actions.length !== payload.frames) {
     throw new Error(`action length mismatch in ${filename}`);
@@ -108,8 +110,9 @@ function exportDemo(filename, outputDir, snapshotInterval) {
   const sim = new Sim(payload.seed, {
     rules: Object.freeze({ autoGuard: false, checkpoints: false }),
   });
+  if (payload.version === 2) sim.restore(payload.initialSnapshot);
   const observation = createObservation();
-  let previousAction = 0;
+  let previousAction = payload.initialPreviousAction ?? 0;
   const snapshots = [];
   const bandStats = new Map();
 

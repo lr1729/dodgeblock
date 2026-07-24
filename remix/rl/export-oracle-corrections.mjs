@@ -106,6 +106,9 @@ if (!inputs.length) throw new Error('provide at least one --oracle file or direc
 const outputDir = path.resolve(stringArg('--output-dir', 'rl/oracle-corrections-v5'));
 const shardSeed = Math.floor(numberArg('--shard-seed', 1001));
 const prefixFrames = Math.max(1, Math.floor(numberArg('--prefix-frames', 60)));
+const softTargets = process.argv.includes('--soft-targets');
+const temperature = Math.max(1e-3, numberArg('--temperature', 2));
+const branchPrefix = Math.max(1, Math.floor(numberArg('--branch-prefix', 1)));
 const records = [];
 const sourceHashes = [];
 
@@ -114,6 +117,61 @@ for (const filename of inputFiles(inputs)) {
   sourceHashes.push(sha256(bytes));
   const oracle = JSON.parse(bytes);
   for (const entry of oracle.cases ?? []) {
+    if (softTargets) {
+      if (!entry.candidates?.length) continue;
+      const deathCase = JSON.parse(zlib.gunzipSync(fs.readFileSync(entry.filename)));
+      const view = rewindView(deathCase, entry.rewind);
+      if (!view) continue;
+      const actionSamples = Array.from({ length: 18 }, () => []);
+      for (const candidate of entry.candidates) {
+        if (candidate.branchAction === null) continue;
+        const action = candidate.branchAction;
+        const minimumFrames = Math.min(
+          ...candidate.outcomes.map((outcome) => outcome.frames),
+        );
+        const meanHeight = candidate.outcomes.reduce(
+          (total, outcome) => total + outcome.height,
+          0,
+        ) / candidate.outcomes.length;
+        const meanFocus = candidate.outcomes.reduce(
+          (total, outcome) => total + outcome.focus,
+          0,
+        ) / candidate.outcomes.length;
+        const survival = minimumFrames / oracle.horizon;
+        const layerProgress = (meanHeight - view.sim.height) / 40;
+        const utility = survival * 10 + layerProgress + meanFocus * 0.1;
+        actionSamples[action].push(utility);
+      }
+      const actionValues = actionSamples.map((samples) =>
+        samples.length
+          ? samples.reduce((sum, value) => sum + value, 0) / samples.length
+          : -Infinity);
+      const finiteValues = actionValues.filter(Number.isFinite);
+      if (finiteValues.length < 2) continue;
+      const maximum = Math.max(...finiteValues);
+      const weights = actionValues.map((value) =>
+        Number.isFinite(value) ? Math.exp((value - maximum) / temperature) : 0);
+      const total = weights.reduce((sum, value) => sum + value, 0);
+      const targets = weights.map((value) => value / total);
+      const bestAction = targets.indexOf(Math.max(...targets));
+      const heldTarget = Array(18).fill(0);
+      heldTarget[bestAction] = 1;
+      records.push({
+        filename: entry.filename,
+        rewind: entry.rewind,
+        sim: view.sim,
+        previousAction: view.previousAction,
+        actions: Array(branchPrefix).fill(bestAction),
+        targets: [
+          targets,
+          ...Array.from(
+            { length: branchPrefix - 1 },
+            () => heldTarget,
+          ),
+        ],
+      });
+      continue;
+    }
     if (!entry.robust?.actions) continue;
     const deathCase = JSON.parse(zlib.gunzipSync(fs.readFileSync(entry.filename)));
     const view = rewindView(deathCase, entry.rewind);
@@ -137,16 +195,19 @@ const arrays = {
   forecasts: new Float32Array(frames * FORECAST_COUNT * FORECAST_FEATURES),
   state: new Float32Array(frames * STATE_SIZE),
   actions: new Uint8Array(frames),
+  targets: softTargets ? new Float32Array(frames * 18) : null,
 };
 const observation = createObservation();
 let frame = 0;
 for (const record of records) {
   let previousAction = record.previousAction;
-  for (const proposedAction of record.actions) {
+  for (let index = 0; index < record.actions.length; index++) {
+    const proposedAction = record.actions[index];
     const action = canonicalAction(record.sim, proposedAction, previousAction);
     encodeObservation(record.sim, { previousAction }, observation);
     copyObservation(arrays, frame, observation);
     arrays.actions[frame] = action;
+    if (record.targets) arrays.targets.set(record.targets[index], frame * 18);
     record.sim.step(heldActionInput(action, previousAction));
     previousAction = action;
     if (record.sim.dead) {
@@ -166,15 +227,27 @@ const files = {
   state: writeGzip(path.join(shardDir, 'state.f32.gz'), arrays.state),
   actions: writeGzip(path.join(shardDir, 'actions.u8.gz'), arrays.actions),
 };
+if (arrays.targets) {
+  files.targets = writeGzip(
+    path.join(shardDir, 'targets.f32.gz'),
+    arrays.targets,
+  );
+}
 const sourceDigest = sha256(Buffer.from(sourceHashes.sort().join('\n')));
 const manifest = {
   version: 1,
   seed: shardSeed,
   frames,
   targetHeight: 10_000,
-  source: 'on-policy-robust-oracle-v5',
+  source: softTargets
+    ? 'on-policy-soft-oracle-v5'
+    : 'on-policy-robust-oracle-v5',
   correctionCases: records.length,
   prefixFrames,
+  softTargets,
+  temperature: softTargets ? temperature : undefined,
+  branchPrefix: softTargets ? branchPrefix : undefined,
+  utility: softTargets ? 'survival-plus-layer-progress-v2' : undefined,
   demo: {
     file: 'oracle-results',
     sha256: sourceDigest,

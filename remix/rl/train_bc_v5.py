@@ -10,7 +10,11 @@ from torch import nn
 
 from demo_dataset import DECISION_SAMPLE_WEIGHTS, DemoDataset
 from imitation_v5 import autoregressive_imitation_loss, tensor_demo_batch
-from ppo_v2 import ActorCriticNetwork, atomic_checkpoint
+from ppo_v2 import (
+    STICKY_MODEL_ARCHITECTURE,
+    StickyActorCriticNetwork,
+    atomic_checkpoint,
+)
 
 
 def parse_seeds(value):
@@ -70,13 +74,14 @@ def evaluate_dataset(agent, dataset, batch_size, device, autocast, focus_weight)
     seed_metrics = {}
     with torch.inference_mode():
         for batch, seed in dataset.iter_batches(batch_size):
-            observation, actions = tensor_demo_batch(batch, device)
+            observation, actions, targets = tensor_demo_batch(batch, device)
             with autocast:
                 logits, _value = agent(observation)
                 _loss, result = autoregressive_imitation_loss(
                     logits,
                     observation,
                     actions,
+                    targets=targets,
                     focus_positive_weight=focus_weight,
                 )
             values = {key: float(value) for key, value in result.items()}
@@ -101,13 +106,14 @@ def evaluate_batch(agent, batch, batch_size, device, autocast, focus_weight):
                 key: values[start:start + batch_size]
                 for key, values in batch.items()
             }
-            observation, actions = tensor_demo_batch(sliced, device)
+            observation, actions, targets = tensor_demo_batch(sliced, device)
             with autocast:
                 logits, _value = agent(observation)
                 _loss, result = autoregressive_imitation_loss(
                     logits,
                     observation,
                     actions,
+                    targets=targets,
                     focus_positive_weight=focus_weight,
                 )
             metrics.append({key: float(value) for key, value in result.items()})
@@ -135,6 +141,7 @@ def checkpoint_payload(
         'epochs_without_improvement': epochs_without_improvement,
         'frames': 0,
         'stage': 'v5-search-trajectory-bc',
+        'model_architecture': STICKY_MODEL_ARCHITECTURE,
         'args': vars(args),
         'dataset_contract': {
             'training': train.contract(),
@@ -173,7 +180,7 @@ def main():
         np.random.default_rng(args.seed ^ 0xD3C1_5105),
         decision_weighted=True,
     )
-    agent = ActorCriticNetwork().to(device)
+    agent = StickyActorCriticNetwork().to(device)
     optimizer = torch.optim.AdamW(
         agent.parameters(),
         lr=args.learning_rate,
@@ -238,13 +245,14 @@ def main():
         train_weights = []
         for _step in range(steps_per_epoch):
             batch = train.sample(args.batch_size, rng)
-            observation, actions = tensor_demo_batch(batch, device)
+            observation, actions, targets = tensor_demo_batch(batch, device)
             with autocast:
                 logits, _value = agent(observation)
                 loss, result = autoregressive_imitation_loss(
                     logits,
                     observation,
                     actions,
+                    targets=targets,
                     focus_positive_weight=args.focus_positive_weight,
                 )
             optimizer.zero_grad(set_to_none=True)

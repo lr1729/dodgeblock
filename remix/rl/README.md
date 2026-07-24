@@ -193,9 +193,13 @@ fresh behavior. If BC has no fresh target completions, collect policy deaths
 and generate search corrections before relying on target reward.
 
 The cold-start correction stage searches from on-policy rewind states against
-the original future and two common reseeded futures. Only robust candidates
-are retained, and only their first second is distilled; later random search
-actions are not treated as expert behavior.
+the original future and two common reseeded futures. It branches all 18
+actions over three matched continuation plans, averages each action's return,
+and distills a soft action target plus the six-frame option prefix. This keeps
+multiple viable escapes, teaches held-action intent, and avoids treating later
+random search actions as expert behavior. Local layer progress is used only to
+bootstrap the cold-start oracle; the final PPO objective remains binary 10k
+success.
 
 ```bash
 python rl/evaluate_ppo_v2.py ~/dodgeblock-bc-v5/checkpoints/best.pt \
@@ -203,12 +207,13 @@ python rl/evaluate_ppo_v2.py ~/dodgeblock-bc-v5/checkpoints/best.pt \
   --death-case-dir ~/dodgeblock-bc-v5/deaths
 node rl/rescue-oracle.mjs \
   --case ~/dodgeblock-bc-v5/deaths \
-  --trials 64 --horizon 240 --futures 3 --rewinds 120 \
+  --trials 64 --horizon 240 --futures 3 --rewinds 30,60,90,120 \
+  --all-candidates \
   --output ~/dodgeblock-bc-v5/oracle.json
 node rl/export-oracle-corrections.mjs \
   --oracle ~/dodgeblock-bc-v5/oracle.json \
   --output-dir ~/dodgeblock-demo-dataset-v5 \
-  --shard-seed 1001 --prefix-frames 60
+  --shard-seed 1001 --soft-targets --temperature 1 --branch-prefix 6
 ```
 
 V5 PPO initializes the policy from BC, starts half of training episodes fresh,

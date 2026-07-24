@@ -31,6 +31,7 @@ const horizon = Math.max(1, Math.floor(numberArg('--horizon', 360)));
 const futures = Math.max(1, Math.floor(numberArg('--futures', 3)));
 const searchSeed = numberArg('--seed', 0x5e5c_0e17) >>> 0;
 const output = stringArg('--output', '');
+const allCandidates = process.argv.includes('--all-candidates');
 const rewindFrames = [...new Set(
   stringArg('--rewinds', '1,30,60,120,240')
     .split(',')
@@ -84,19 +85,33 @@ function focusOption() {
   ];
 }
 
-function candidateActions(deathCase, trial) {
-  if (trial === 0) {
-    return [
-      ...(deathCase.baselineActions ?? [deathCase.fatalAction]),
-      ...Array(horizon).fill(deathCase.fatalAction),
-    ].slice(0, horizon);
-  }
+function randomActions(deathCase) {
   const actions = [];
   while (actions.length < horizon) {
     const canTryFocus = deathCase.snapshot.player.focus > 0;
     actions.push(...(canTryFocus && rng.chance(0.14) ? focusOption() : normalOption()));
   }
   return actions.slice(0, horizon);
+}
+
+function candidateActions(deathCase, trial, branchSuffixes) {
+  if (trial === 0) {
+    return [
+      ...(deathCase.baselineActions ?? [deathCase.fatalAction]),
+      ...Array(horizon).fill(deathCase.fatalAction),
+    ].slice(0, horizon);
+  }
+  if (trial <= 54) {
+    const zeroBased = trial - 1;
+    const action = zeroBased % 18;
+    const group = Math.floor(zeroBased / 18);
+    branchSuffixes[group] ??= randomActions(deathCase);
+    return [
+      ...Array(6).fill(action),
+      ...branchSuffixes[group].slice(6),
+    ];
+  }
+  return randomActions(deathCase);
 }
 
 function futureSeed(deathCase, index) {
@@ -182,8 +197,10 @@ function analyzeView(filename, deathCase) {
   let firstRobustRescue = null;
   let robust = null;
   let best = null;
+  const candidates = [];
+  const branchSuffixes = [];
   for (let trial = 0; trial < trials; trial++) {
-    const actions = candidateActions(deathCase, trial);
+    const actions = candidateActions(deathCase, trial, branchSuffixes);
     const outcomes = Array.from({ length: futures }, (_, index) =>
       rollout(deathCase, actions, index));
     const originalRescue = outcomes[0].survived;
@@ -193,6 +210,24 @@ function analyzeView(filename, deathCase) {
       (total, result) => total + result.frames + result.height / 100 + result.focus,
       0,
     );
+    if (allCandidates) {
+      const branchAction = trial > 0 && trial <= 54
+        ? canonicalAction(
+          deathCase.snapshot,
+          (trial - 1) % 18,
+          deathCase.previousAction,
+        )
+        : null;
+      candidates.push({
+        trial: trial + 1,
+        originalRescue,
+        robustRescue,
+        score,
+        branchAction,
+        outcomes,
+        actions: Buffer.from(actions).toString('base64'),
+      });
+    }
     if (robustRescue && firstRobustRescue === null) {
       firstRobustRescue = trial + 1;
       robust = {
@@ -212,7 +247,7 @@ function analyzeView(filename, deathCase) {
         actions: Buffer.from(actions).toString('base64'),
       };
     }
-    if (firstRobustRescue !== null) break;
+    if (!allCandidates && firstRobustRescue !== null) break;
   }
   return {
     filename,
@@ -224,6 +259,7 @@ function analyzeView(filename, deathCase) {
     firstRobustRescue,
     robust,
     best,
+    candidates: allCandidates ? candidates : undefined,
   };
 }
 
@@ -246,6 +282,7 @@ const payload = {
   trials,
   horizon,
   futures,
+  allCandidates,
   searchSeed,
   rewindFrames,
   caseCount: files.length,
