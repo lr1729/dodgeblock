@@ -9,7 +9,9 @@ const filename = process.argv[2];
 if (!filename) throw new Error('usage: node rl/replay-demo.mjs DEMONSTRATION.json.gz');
 
 const payload = JSON.parse(zlib.gunzipSync(fs.readFileSync(filename)));
-if (payload.version !== 1) throw new Error(`unsupported demonstration version: ${payload.version}`);
+if (![1, 2].includes(payload.version)) {
+  throw new Error(`unsupported demonstration version: ${payload.version}`);
+}
 const actions = Buffer.from(payload.actions, 'base64');
 if (actions.length !== payload.frames) {
   throw new Error(`action length mismatch: expected ${payload.frames}, got ${actions.length}`);
@@ -18,7 +20,8 @@ if (actions.length !== payload.frames) {
 const sim = new Sim(payload.seed, {
   rules: { autoGuard: false, checkpoints: false },
 });
-let previousAction = 0;
+if (payload.version === 2) sim.restore(payload.initialSnapshot);
+let previousAction = payload.initialPreviousAction ?? 0;
 for (const action of actions) {
   sim.step(heldActionInput(action, previousAction));
   previousAction = action;

@@ -217,27 +217,68 @@ function reconstructActions(entry, tail = []) {
   return actions;
 }
 
+function replayActions(snapshot, previousAction, actions) {
+  const replay = new Sim(seed, { rules });
+  if (snapshot) replay.restore(snapshot);
+  let prior = previousAction;
+  for (const action of actions) {
+    replay.step(heldActionInput(action, prior));
+    prior = action;
+    if (replay.dead) return null;
+  }
+  return replay;
+}
+
 function writeDemonstration(entry, tail, sim, iteration) {
-  const actions = reconstructActions(entry, tail);
+  let actions = reconstructActions(entry, tail);
+  let startSnapshot = initialSnapshot;
+  let startPreviousAction = initialPreviousAction;
+  let replayScope = 'search-root';
+  let replay = replayActions(startSnapshot, startPreviousAction, actions);
+
+  if (
+    !replay ||
+    replay.height < targetHeight ||
+    replay.hash() !== sim.hash()
+  ) {
+    actions = Buffer.from(tail);
+    startSnapshot = entry.snapshot;
+    startPreviousAction = entry.previousAction;
+    replayScope = 'restored-origin';
+    replay = replayActions(startSnapshot, startPreviousAction, actions);
+  }
+  if (
+    !replay ||
+    replay.height < targetHeight ||
+    replay.hash() !== sim.hash()
+  ) {
+    throw new Error('successful search state does not have a replayable action suffix');
+  }
+
   const payload = {
-    version: initialSnapshot ? 2 : 1,
+    version: startSnapshot ? 2 : 1,
     seed,
     searchSeed,
     targetHeight,
-    height: sim.height,
+    height: replay.height,
     frames: actions.length,
     iteration,
-    finalHash: sim.hash(),
+    finalHash: replay.hash(),
     actions: actions.toString('base64'),
-    initialSnapshot,
-    initialPreviousAction,
+    initialSnapshot: startSnapshot,
+    initialPreviousAction: startPreviousAction,
+    replayScope,
   };
-  const filename = `demo-${seed}-${Math.round(sim.height)}-${iteration}.json.gz`;
+  const filename = `demo-${seed}-${Math.round(replay.height)}-${iteration}.json.gz`;
   const target = path.join(outputDir, filename);
   const temporary = `${target}.tmp`;
   fs.writeFileSync(temporary, zlib.gzipSync(JSON.stringify(payload)));
   fs.renameSync(temporary, target);
-  return target;
+  return {
+    path: target,
+    replayScope,
+    frames: actions.length,
+  };
 }
 
 function loadStartCase(filename, rewind) {
@@ -421,7 +462,7 @@ for (let iteration = startIteration; iteration <= iterations; iteration++) {
         event: 'success',
         iteration,
         height: sim.height,
-        frames: reconstructActions(origin, actions).length,
+        frames: demonstration.frames,
         demonstration,
       })}\n`);
       writeStatus(iteration, started);
