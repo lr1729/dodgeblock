@@ -225,6 +225,23 @@ The trainer reports `joint_accuracy_lift_over_repeat`; a model matching the
 repeat-previous baseline has not learned state-dependent decisions regardless
 of its raw frame accuracy. PPO remains gated on fresh closed-loop rollouts.
 
+For causal labels sampled at a regular cadence, train the direct action head
+and remove the explorer's arbitrary burst boundary from the contract. Physics
+still advances at 60 Hz; evaluation holds each decision for the saved number
+of frames:
+
+```bash
+export DODGEBLOCK_CORRECTION_DATASET="$HOME/dodgeblock-counterfactual-v5-cadence2"
+export DODGEBLOCK_CORRECTION_TRAIN_SEEDS="5001-5012"
+export DODGEBLOCK_CORRECTION_VALIDATION_SEEDS="5013-5016"
+export DODGEBLOCK_CORRECTION_FRACTION=1
+export DODGEBLOCK_FIXED_CONTROL_INTERVAL=2
+export DODGEBLOCK_BC_SELECTION_METRIC=correction_validation
+rl/run-bc-v5.sh
+```
+
+`evaluate_ppo_v2.py` reads this cadence from the checkpoint.
+
 The cold-start correction stage searches from on-policy rewind states against
 the original future and two common reseeded futures. It branches all 18
 actions over three matched continuation plans, averages each action's return,

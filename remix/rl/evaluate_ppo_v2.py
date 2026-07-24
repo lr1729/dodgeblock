@@ -30,6 +30,12 @@ def main():
     parser.add_argument('--stochastic', action='store_true')
     parser.add_argument('--no-amp', action='store_true')
     parser.add_argument('--death-case-dir', default='')
+    parser.add_argument(
+        '--control-interval',
+        type=int,
+        default=0,
+        help='Physics frames per policy decision; zero uses the checkpoint contract.',
+    )
     args = parser.parse_args()
     if args.episodes % args.workers:
         raise ValueError('--episodes must be divisible by --workers')
@@ -40,6 +46,10 @@ def main():
     torch.backends.cudnn.allow_tf32 = True
     torch.backends.cudnn.benchmark = True
     saved = torch.load(args.checkpoint, map_location=device, weights_only=False)
+    saved_interval = int(saved.get('args', {}).get('fixed_control_interval', 0))
+    control_interval = args.control_interval or saved_interval or 1
+    if control_interval <= 0:
+        raise ValueError('--control-interval must be positive')
     network_class = (
         StickyActorCriticNetwork
         if saved.get('model_architecture') == STICKY_MODEL_ARCHITECTURE
@@ -62,22 +72,37 @@ def main():
     lengths = np.zeros(args.episodes, np.int64)
     outcomes = np.full(args.episodes, 'timeout', dtype=object)
     action_counts = np.zeros(len(ACTION_NAMES), np.int64)
+    decision_counts = np.zeros(len(ACTION_NAMES), np.int64)
+    held_actions = np.zeros(args.episodes, dtype=np.uint8)
     amp = not args.no_amp
 
     try:
         for _frame in range(args.max_frames):
-            observation = tensor_observation(packet_observation(packet), device)
-            with torch.inference_mode(), torch.autocast(
-                device_type=device.type,
-                dtype=torch.bfloat16,
-                enabled=amp and device.type == 'cuda',
-            ):
-                logits, _value = agent(observation)
-                distribution = AutoregressiveActionDistribution(logits, observation)
-                if args.stochastic:
-                    actions = distribution.sample().cpu().numpy().astype(np.uint8)
-                else:
-                    actions = distribution.mode().cpu().numpy().astype(np.uint8)
+            if _frame % control_interval == 0:
+                observation = tensor_observation(packet_observation(packet), device)
+                with torch.inference_mode(), torch.autocast(
+                    device_type=device.type,
+                    dtype=torch.bfloat16,
+                    enabled=amp and device.type == 'cuda',
+                ):
+                    logits, _value = agent(observation)
+                    distribution = AutoregressiveActionDistribution(
+                        logits,
+                        observation,
+                    )
+                    if args.stochastic:
+                        held_actions = (
+                            distribution.sample().cpu().numpy().astype(np.uint8)
+                        )
+                    else:
+                        held_actions = (
+                            distribution.mode().cpu().numpy().astype(np.uint8)
+                        )
+                decision_counts += np.bincount(
+                    held_actions[active],
+                    minlength=len(ACTION_NAMES),
+                )
+            actions = held_actions.copy()
             action_counts += np.bincount(actions[active], minlength=len(ACTION_NAMES))
             actions[~active] = 254
             packet = bridge.step(actions)
@@ -107,6 +132,7 @@ def main():
         'episodes': args.episodes,
         'seed': args.seed,
         'stochastic': args.stochastic,
+        'control_interval': control_interval,
         'mean_height': round(float(heights.mean()), 2),
         'mean_height_ci95': bootstrap_interval(heights, np.mean, bootstrap_rng),
         'median_height': round(float(np.median(heights)), 2),
@@ -124,6 +150,11 @@ def main():
         'action_fractions': {
             name: round(float(count / max(1, action_counts.sum())), 4)
             for name, count in zip(ACTION_NAMES, action_counts)
+            if count
+        },
+        'decision_fractions': {
+            name: round(float(count / max(1, decision_counts.sum())), 4)
+            for name, count in zip(ACTION_NAMES, decision_counts)
             if count
         },
     }, indent=2))

@@ -39,7 +39,26 @@ const shardSeed = Math.floor(numberArg('--shard-seed', 4001));
 const searchSeed = numberArg('--search-seed', 0x4354_4654) >>> 0;
 const horizon = Math.max(30, Math.floor(numberArg('--horizon', 360)));
 const futures = Math.max(1, Math.floor(numberArg('--futures', 2)));
-const branchFrames = Math.max(1, Math.floor(numberArg('--branch-frames', 6)));
+const controlInterval = Math.max(
+  1,
+  Math.floor(numberArg('--control-interval', 1)),
+);
+const selectionMode = stringArg('--selection-mode', 'mixed');
+if (!['mixed', 'cadence'].includes(selectionMode)) {
+  throw new Error('--selection-mode must be mixed or cadence');
+}
+const branchFrames = Math.max(
+  1,
+  Math.floor(numberArg(
+    '--branch-frames',
+    selectionMode === 'cadence' ? controlInterval : 6,
+  )),
+);
+if (selectionMode === 'cadence' && branchFrames !== controlInterval) {
+  throw new Error(
+    'cadence mode requires --branch-frames to equal --control-interval',
+  );
+}
 const stride = Math.max(1, Math.floor(numberArg('--stride', 60)));
 const maxStates = Math.max(1, Math.floor(numberArg('--max-states', 512)));
 const temperature = Math.max(1e-3, numberArg('--temperature', 2));
@@ -187,6 +206,18 @@ function utility(outcomes, startHeight) {
 }
 
 function selectedFrames(actions) {
+  if (selectionMode === 'cadence') {
+    const frames = [];
+    for (let frame = 0; frame < actions.length; frame += controlInterval) {
+      frames.push(frame);
+    }
+    if (frames.length <= maxStates) return new Set(frames);
+    const selected = new Set();
+    for (let index = 0; index < maxStates; index++) {
+      selected.add(frames[Math.floor(index * frames.length / maxStates)]);
+    }
+    return selected;
+  }
   const candidates = new Set([0]);
   let previousAction = 0;
   for (let frame = 0; frame < actions.length; frame++) {
@@ -249,7 +280,9 @@ const started = Date.now();
 for (let frame = 0; frame < actions.length; frame++) {
   if (frameSelection.has(frame)) {
     const available = Math.min(branchFrames, actions.length - frame);
-    const baselinePrefix = [...actions.slice(frame, frame + available)];
+    const baselinePrefix = selectionMode === 'cadence'
+      ? constantPrefix(actions[frame]).slice(0, available)
+      : [...actions.slice(frame, frame + available)];
     const suffix = [...actions.slice(
       frame + available,
       Math.min(actions.length, frame + horizon),
@@ -273,6 +306,7 @@ for (let frame = 0; frame < actions.length; frame++) {
     });
     const baseline = scored.find((candidate) => candidate.baseline);
     if (
+      selectionMode === 'mixed' &&
       baseline.outcomes[0].frames < Math.min(horizon, actions.length - frame) &&
       !baseline.outcomes[0].reachedTarget
     ) {
@@ -367,6 +401,8 @@ const manifest = {
   horizon,
   futures,
   branchFrames,
+  controlInterval,
+  selectionMode,
   stride,
   temperature,
   meanAdvantage: mean('selectedScore') - mean('baselineScore'),
@@ -403,6 +439,8 @@ process.stdout.write(`${JSON.stringify({
   meanAdvantage: manifest.meanAdvantage,
   meanTargetEntropy: manifest.meanTargetEntropy,
   selectedBaselineFraction: manifest.selectedBaselineFraction,
+  controlInterval,
+  selectionMode,
   elapsedSeconds: Math.round((Date.now() - started) / 100) / 10,
   output: shardDir,
 })}\n`);

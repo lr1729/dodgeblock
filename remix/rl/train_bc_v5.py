@@ -11,7 +11,9 @@ from torch import nn
 from demo_dataset import DECISION_SAMPLE_WEIGHTS, DemoDataset
 from imitation_v5 import autoregressive_imitation_loss, tensor_demo_batch
 from ppo_v2 import (
+    MODEL_ARCHITECTURE,
     STICKY_MODEL_ARCHITECTURE,
+    ActorCriticNetwork,
     StickyActorCriticNetwork,
     atomic_checkpoint,
 )
@@ -43,6 +45,18 @@ def arguments():
     parser.add_argument('--correction-validation-seeds', default='')
     parser.add_argument('--correction-fraction', type=float, default=0.0)
     parser.add_argument('--correction-repeat-coef', type=float, default=0.05)
+    parser.add_argument(
+        '--fixed-control-interval',
+        type=int,
+        default=0,
+        help='Use the direct action head and hold each action for this many frames.',
+    )
+    parser.add_argument(
+        '--steps-per-epoch',
+        type=int,
+        default=0,
+        help='Override sampled batches per epoch (zero selects a dataset-sized pass).',
+    )
     parser.add_argument(
         '--selection-metric',
         choices=('validation', 'decision_validation', 'correction_validation'),
@@ -171,7 +185,11 @@ def checkpoint_payload(
         'epochs_without_improvement': epochs_without_improvement,
         'frames': 0,
         'stage': 'v5-search-trajectory-bc',
-        'model_architecture': STICKY_MODEL_ARCHITECTURE,
+        'model_architecture': (
+            MODEL_ARCHITECTURE
+            if args.fixed_control_interval > 0
+            else STICKY_MODEL_ARCHITECTURE
+        ),
         'args': vars(args),
         'dataset_contract': {
             'training': train.contract(),
@@ -209,6 +227,10 @@ def main():
         raise ValueError('--correction-fraction must be between zero and one')
     if args.correction_repeat_coef < 0:
         raise ValueError('--correction-repeat-coef cannot be negative')
+    if args.fixed_control_interval < 0:
+        raise ValueError('--fixed-control-interval cannot be negative')
+    if args.steps_per_epoch < 0:
+        raise ValueError('--steps-per-epoch cannot be negative')
     if args.correction_fraction > 0 and not correction_train_seeds:
         raise ValueError(
             '--correction-fraction requires --correction-train-seeds'
@@ -250,7 +272,12 @@ def main():
         np.random.default_rng(args.seed ^ 0xD3C1_5105),
         decision_weighted=True,
     )
-    agent = StickyActorCriticNetwork().to(device)
+    network_class = (
+        ActorCriticNetwork
+        if args.fixed_control_interval > 0
+        else StickyActorCriticNetwork
+    )
+    agent = network_class().to(device)
     optimizer = torch.optim.AdamW(
         agent.parameters(),
         lr=args.learning_rate,
@@ -276,10 +303,32 @@ def main():
             )
     elif args.weights_from:
         saved = torch.load(args.weights_from, map_location=device, weights_only=False)
-        agent.load_state_dict(saved['agent'])
+        if args.fixed_control_interval > 0:
+            compatible = {
+                key: value
+                for key, value in saved['agent'].items()
+                if key in agent.state_dict() and
+                agent.state_dict()[key].shape == value.shape
+            }
+            missing, unexpected = agent.load_state_dict(compatible, strict=False)
+            if unexpected or set(missing) - {'critic.weight', 'critic.bias'}:
+                raise ValueError(
+                    f'incompatible fixed-cadence initialization: '
+                    f'missing={missing}, unexpected={unexpected}'
+                )
+        else:
+            agent.load_state_dict(saved['agent'])
 
     rng = np.random.default_rng(args.seed)
-    steps_per_epoch = int(np.ceil(train.frames / args.batch_size))
+    epoch_frames = (
+        correction_train.frames
+        if args.correction_fraction == 1 and correction_train is not None
+        else train.frames
+    )
+    steps_per_epoch = (
+        args.steps_per_epoch or
+        int(np.ceil(epoch_frames / args.batch_size))
+    )
     checkpoint_dir = Path(args.checkpoint_dir)
     autocast = torch.autocast(
         device_type=device.type,
@@ -308,6 +357,7 @@ def main():
         ),
         'correction_fraction': args.correction_fraction,
         'correction_repeat_coef': args.correction_repeat_coef,
+        'fixed_control_interval': args.fixed_control_interval,
         'selection_metric': args.selection_metric,
         'steps_per_epoch': steps_per_epoch,
         'focus_positive_weight': args.focus_positive_weight,
@@ -350,7 +400,8 @@ def main():
                     focus_positive_weight=args.focus_positive_weight,
                     sticky_repeat_coef=(
                         args.correction_repeat_coef
-                        if use_correction else None
+                        if use_correction and args.fixed_control_interval == 0
+                        else None
                     ),
                 )
             optimizer.zero_grad(set_to_none=True)
@@ -393,7 +444,11 @@ def main():
                 device,
                 autocast,
                 args.focus_positive_weight,
-                args.correction_repeat_coef,
+                (
+                    args.correction_repeat_coef
+                    if args.fixed_control_interval == 0
+                    else None
+                ),
             )[0]
             if correction_validation else None
         )

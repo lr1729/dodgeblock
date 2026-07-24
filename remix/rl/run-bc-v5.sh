@@ -10,6 +10,14 @@ extra_args=()
 if [[ -n "${DODGEBLOCK_BC_WEIGHTS_FROM:-}" ]]; then
   extra_args+=(--weights-from "$DODGEBLOCK_BC_WEIGHTS_FROM")
 fi
+if [[ -n "${DODGEBLOCK_FIXED_CONTROL_INTERVAL:-}" ]]; then
+  extra_args+=(
+    --fixed-control-interval "$DODGEBLOCK_FIXED_CONTROL_INTERVAL"
+  )
+fi
+if [[ -n "${DODGEBLOCK_BC_STEPS_PER_EPOCH:-}" ]]; then
+  extra_args+=(--steps-per-epoch "$DODGEBLOCK_BC_STEPS_PER_EPOCH")
+fi
 if [[ -n "${DODGEBLOCK_CORRECTION_TRAIN_SEEDS:-}" ]]; then
   extra_args+=(
     --correction-dataset "${DODGEBLOCK_CORRECTION_DATASET:-$dataset}"
