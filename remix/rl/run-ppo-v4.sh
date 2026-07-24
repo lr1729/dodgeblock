@@ -30,6 +30,9 @@ args=(
   --value-coef "${DODGEBLOCK_VALUE_COEF:-0.5}"
   --target-kl "${DODGEBLOCK_TARGET_KL:-0.03}"
   --target-height "${DODGEBLOCK_TARGET_HEIGHT:-10000}"
+  --reward-mode "${DODGEBLOCK_REWARD_MODE:-target}"
+  --death-penalty "${DODGEBLOCK_DEATH_PENALTY:-1.0}"
+  --alive-reward "${DODGEBLOCK_ALIVE_REWARD:-0.0}"
   --cell-bank-probability "${DODGEBLOCK_CELL_BANK_PROBABILITY:-0.8}"
   --cell-heldout-fraction "${DODGEBLOCK_CELL_HELDOUT_FRACTION:-0.1}"
   --cell-band-height "${DODGEBLOCK_CELL_BAND_HEIGHT:-400}"
@@ -56,6 +59,8 @@ fi
 
 if [[ -e "$checkpoint_dir/latest.pt" ]]; then
   args+=(--resume "$checkpoint_dir/latest.pt")
+elif [[ -n "${DODGEBLOCK_INITIALIZE_FROM:-}" ]]; then
+  args+=(--initialize-from "$DODGEBLOCK_INITIALIZE_FROM")
 fi
 
 if [[ "${DODGEBLOCK_EVAL_AFTER_TRAIN:-0}" == "1" ]]; then

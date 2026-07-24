@@ -266,6 +266,22 @@ node rl/export-oracle-corrections.mjs \
   --shard-seed 1001 --soft-targets --temperature 1 --branch-prefix 6
 ```
 
+An opening-only bootstrap can use dense height reward with a 1k terminal
+goal, always from a fresh game. This is a machine-learned low-level prior, not
+the final objective and not a suffix curriculum:
+
+```bash
+export DODGEBLOCK_TARGET_HEIGHT=1000
+export DODGEBLOCK_REWARD_MODE=height
+export DODGEBLOCK_CELL_EVAL_ENVS=0
+export DODGEBLOCK_TOTAL_FRAMES=20000000
+rl/run-ppo-v4.sh
+```
+
+Later goal stages use `DODGEBLOCK_REWARD_MODE=target`, start from the preceding
+checkpoint in a new directory, and retain fresh starts. The 10k stage is
+therefore optimized against the original binary Hardcore objective.
+
 V5 PPO initializes the policy from BC, starts half of training episodes fresh,
 and samples the remainder uniformly by successful source seed and trajectory
 time. It never uses arbitrary explorer archive cells. Snapshot restoration

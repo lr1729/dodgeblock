@@ -283,6 +283,13 @@ def arguments():
     parser.add_argument('--max-grad-norm', type=float, default=0.5)
     parser.add_argument('--target-kl', type=float, default=0.03)
     parser.add_argument('--target-height', type=float, default=10_000)
+    parser.add_argument(
+        '--reward-mode',
+        choices=('target', 'height'),
+        default='target',
+    )
+    parser.add_argument('--death-penalty', type=float, default=1.0)
+    parser.add_argument('--alive-reward', type=float, default=0.0)
     parser.add_argument('--cell-bank', action='append', default=[])
     parser.add_argument('--cell-bank-probability', type=float, default=0.8)
     parser.add_argument('--cell-heldout-fraction', type=float, default=0.1)
@@ -374,7 +381,9 @@ def training_contract(args):
         'action_count': ACTION_COUNT,
         'terrain_shape': [TERRAIN_ROWS, TERRAIN_COLS],
         'target_height': args.target_height,
-        'reward_mode': 'target',
+        'reward_mode': args.reward_mode,
+        'death_penalty': args.death_penalty,
+        'alive_reward': args.alive_reward,
         'gamma': args.gamma,
         'gae_lambda': args.gae_lambda,
         'total_frames': args.total_frames,
@@ -479,6 +488,8 @@ def main():
         raise ValueError('nonzero demonstration coefficients require --demo-dataset')
     if args.demo_dataset and args.demo_minibatch <= 0:
         raise ValueError('--demo-minibatch must be positive')
+    if args.death_penalty < 0 or args.alive_reward < 0:
+        raise ValueError('reward coefficients cannot be negative')
     env_count = args.workers * args.envs_per_worker
     training_env_count = env_count - args.cell_eval_envs
     if not 0 <= args.cell_eval_envs < env_count:
@@ -587,7 +598,9 @@ def main():
         args.seed,
         target_height=args.target_height,
         discount=args.gamma,
-        reward_mode='target',
+        reward_mode=args.reward_mode,
+        death_penalty=args.death_penalty,
+        alive_reward=args.alive_reward,
         cell_banks=bank_paths,
     )
     packet = bridge.read()
@@ -658,7 +671,9 @@ def main():
         'gamma_per_world_frame': args.gamma,
         'discount_half_life_world_frames': half_life,
         'target_height': args.target_height,
-        'reward_mode': 'target',
+        'reward_mode': args.reward_mode,
+        'death_penalty': args.death_penalty,
+        'alive_reward': args.alive_reward,
         'gae_lambda_per_world_frame': args.gae_lambda,
         'focus_entropy_coef_start': args.focus_entropy_coef_start,
         'focus_entropy_coef_end': args.focus_entropy_coef_end,

@@ -31,6 +31,9 @@ args=(
   --value-coef "${DODGEBLOCK_VALUE_COEF:-0.5}"
   --target-kl "${DODGEBLOCK_TARGET_KL:-0.03}"
   --target-height "${DODGEBLOCK_TARGET_HEIGHT:-10000}"
+  --reward-mode "${DODGEBLOCK_REWARD_MODE:-target}"
+  --death-penalty "${DODGEBLOCK_DEATH_PENALTY:-1.0}"
+  --alive-reward "${DODGEBLOCK_ALIVE_REWARD:-0.0}"
   --cell-eval-envs 0
   --trajectory-start-probability "${DODGEBLOCK_TRAJECTORY_START_PROBABILITY:-0.5}"
   --demo-dataset "$dataset"
