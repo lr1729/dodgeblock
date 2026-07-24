@@ -1,0 +1,24 @@
+[Unit]
+Description=DodgeBlock v5 search-trajectory behavior cloning
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dodgeblock-r2d2/game
+ExecStart=%h/dodgeblock-r2d2/game/rl/run-bc-v5.sh
+Restart=on-failure
+RestartSec=15
+Nice=5
+CPUWeight=40
+Environment=PYTHONUNBUFFERED=1
+Environment=CUDA_VISIBLE_DEVICES=1
+Environment=DODGEBLOCK_PYTHON=%h/envs/dodgeblock-rl/bin/python
+Environment=DODGEBLOCK_DEMO_DATASET=%h/dodgeblock-demo-dataset-v5
+Environment=DODGEBLOCK_BC_CHECKPOINT_DIR=%h/dodgeblock-bc-v5/checkpoints
+Environment=DODGEBLOCK_BC_TRAIN_SEEDS=1-12
+Environment=DODGEBLOCK_BC_VALIDATION_SEEDS=13-16
+Environment=DODGEBLOCK_BC_EPOCHS=30
+Environment=DODGEBLOCK_BC_EARLY_STOP_PATIENCE=5
+
+[Install]
+WantedBy=default.target

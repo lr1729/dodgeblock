@@ -131,7 +131,7 @@ python rl/evaluate_ppo_v2.py ~/dodgeblock-ppo-v4/checkpoints/latest.pt \
 node rl/rescue-oracle.mjs \
   --case ~/dodgeblock-rescue-cases \
   --trials 64 \
-  --horizon 180 \
+  --horizon 360 \
   --futures 3 \
   --rewinds 1,30,60,120,240 \
   --output ~/dodgeblock-rescue-cases/report.json
@@ -149,3 +149,86 @@ python rl/train.py --envs 128 --total-steps 50000000
 CPU is the default for the PPO baseline on the Beelink because it outperforms
 the unsupported Cezanne ROCm path. Its checkpoints live under
 `~/dodgeblock-rl/checkpoints`.
+
+## V5 search distillation and robustification
+
+The completed v4 run is retained as a negative ablation. It learned the final
+400-height suffix but success probability decayed too quickly for a reverse
+curriculum to reach fresh starts. V5 uses the explorer's machine-generated
+actions as an annealed prior instead of asking PPO to rediscover them from
+zero-return episodes.
+
+First export exact observations from successful demonstrations. The exporter
+replays every action against the authoritative simulator, verifies the final
+hash, writes compact typed-array shards, and captures successful-trajectory
+snapshots. A demo that does not replay exactly is rejected.
+
+```bash
+args=()
+for demo in ~/dodgeblock-go-explore-bank-v4/seed-*/demo-*.json.gz; do
+  args+=(--demo "$demo")
+done
+node rl/export-demo-dataset.mjs "${args[@]}" \
+  --output-dir ~/dodgeblock-demo-dataset-v5
+```
+
+Behavior cloning uses seeds 1–12 for optimization and excludes seeds 13–16
+from both gradient updates and snapshot starts. It samples source seeds
+uniformly and trains the exact autoregressive PPO head with conditional
+cross-entropy. A fixed mixture emphasizes opening, action-change, initial, and
+Focus-positive frames without discarding the full frame distribution. Full
+held-out loss remains separately reported.
+
+```bash
+export DODGEBLOCK_DEMO_DATASET="$HOME/dodgeblock-demo-dataset-v5"
+rl/run-bc-v5.sh
+python rl/evaluate_ppo_v2.py \
+  ~/dodgeblock-bc-v5/checkpoints/best.pt \
+  --episodes 256
+```
+
+Imitation metrics are necessary but not a rollout gate. Success-only PPO
+should start only after the distilled policy produces meaningful closed-loop
+fresh behavior. If BC has no fresh target completions, collect policy deaths
+and generate search corrections before relying on target reward.
+
+The cold-start correction stage searches from on-policy rewind states against
+the original future and two common reseeded futures. Only robust candidates
+are retained, and only their first second is distilled; later random search
+actions are not treated as expert behavior.
+
+```bash
+python rl/evaluate_ppo_v2.py ~/dodgeblock-bc-v5/checkpoints/best.pt \
+  --episodes 256 --stochastic \
+  --death-case-dir ~/dodgeblock-bc-v5/deaths
+node rl/rescue-oracle.mjs \
+  --case ~/dodgeblock-bc-v5/deaths \
+  --trials 64 --horizon 240 --futures 3 --rewinds 120 \
+  --output ~/dodgeblock-bc-v5/oracle.json
+node rl/export-oracle-corrections.mjs \
+  --oracle ~/dodgeblock-bc-v5/oracle.json \
+  --output-dir ~/dodgeblock-demo-dataset-v5 \
+  --shard-seed 1001 --prefix-frames 60
+```
+
+V5 PPO initializes the policy from BC, starts half of training episodes fresh,
+and samples the remainder uniformly by successful source seed and trajectory
+time. It never uses arbitrary explorer archive cells. Snapshot restoration
+preserves visible terrain and the remaining material multiset while
+randomizing only hidden future order. Demonstration cross-entropy is evaluated
+only on exact demonstration observations and anneals during robustification;
+there is no global KL constraint on states where the search policy has no
+demonstrated action.
+
+```bash
+rl/run-ppo-v5.sh
+```
+
+`audit-demo-trajectories.mjs` reports exact replay integrity, Focus collision
+outcomes, shelter occupancy, and terrain relief without turning any of those
+diagnostics into a reward:
+
+```bash
+node rl/audit-demo-trajectories.mjs \
+  ~/dodgeblock-go-explore-bank-v4/seed-*/demo-*.json.gz
+```

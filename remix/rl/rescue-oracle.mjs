@@ -27,7 +27,7 @@ function repeatedArgs(name) {
 }
 
 const trials = Math.max(1, Math.floor(numberArg('--trials', 64)));
-const horizon = Math.max(1, Math.floor(numberArg('--horizon', 180)));
+const horizon = Math.max(1, Math.floor(numberArg('--horizon', 360)));
 const futures = Math.max(1, Math.floor(numberArg('--futures', 3)));
 const searchSeed = numberArg('--seed', 0x5e5c_0e17) >>> 0;
 const output = stringArg('--output', '');
@@ -37,6 +37,12 @@ const rewindFrames = [...new Set(
     .map((value) => Math.max(1, Math.floor(Number(value))))
     .filter(Number.isFinite),
 )].sort((a, b) => a - b);
+if (horizon <= rewindFrames.at(-1)) {
+  throw new Error(
+    `--horizon (${horizon}) must exceed the largest rewind ` +
+    `(${rewindFrames.at(-1)}) so the unchanged fatal trajectory is observed`,
+  );
+}
 const rules = Object.freeze({ autoGuard: false, checkpoints: false });
 const rng = new Rng(searchSeed);
 
@@ -104,6 +110,16 @@ function futureSeed(deathCase, index) {
   return Math.imul(value, 0x7feb352d) >>> 0;
 }
 
+function canonicalAction(sim, action, previousAction) {
+  if (action < 9) return action;
+  const player = sim.player;
+  const aiming = player.focusAimTimer > 0;
+  const canPress = player.focus > 0 &&
+    player.focusTimer <= 0 &&
+    previousAction < 9;
+  return aiming || canPress ? action : action % 9;
+}
+
 function rollout(deathCase, actions, futureIndex) {
   const sim = new Sim(deathCase.snapshot.seed, { rules });
   sim.restore(deathCase.snapshot);
@@ -114,7 +130,8 @@ function rollout(deathCase, actions, futureIndex) {
   }
   let previousAction = deathCase.previousAction;
   let frames = 0;
-  for (const action of actions) {
+  for (const proposedAction of actions) {
+    const action = canonicalAction(sim, proposedAction, previousAction);
     sim.step(heldActionInput(action, previousAction));
     previousAction = action;
     frames++;
@@ -163,6 +180,7 @@ function rewindView(deathCase, rewind) {
 function analyzeView(filename, deathCase) {
   let firstOriginalRescue = null;
   let firstRobustRescue = null;
+  let robust = null;
   let best = null;
   for (let trial = 0; trial < trials; trial++) {
     const actions = candidateActions(deathCase, trial);
@@ -171,11 +189,19 @@ function analyzeView(filename, deathCase) {
     const originalRescue = outcomes[0].survived;
     const robustRescue = outcomes.every((result) => result.survived);
     if (originalRescue && firstOriginalRescue === null) firstOriginalRescue = trial + 1;
-    if (robustRescue && firstRobustRescue === null) firstRobustRescue = trial + 1;
     const score = outcomes.reduce(
       (total, result) => total + result.frames + result.height / 100 + result.focus,
       0,
     );
+    if (robustRescue && firstRobustRescue === null) {
+      firstRobustRescue = trial + 1;
+      robust = {
+        score,
+        trial: trial + 1,
+        outcomes,
+        actions: Buffer.from(actions).toString('base64'),
+      };
+    }
     if (!best || score > best.score) {
       best = {
         score,
@@ -196,6 +222,7 @@ function analyzeView(filename, deathCase) {
     phase: deathCase.phase,
     firstOriginalRescue,
     firstRobustRescue,
+    robust,
     best,
   };
 }

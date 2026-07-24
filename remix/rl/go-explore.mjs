@@ -380,6 +380,7 @@ for (let iteration = startIteration; iteration <= iterations; iteration++) {
 
     if (!sim.dead && sim.height >= targetHeight) {
       const demonstration = writeDemonstration(origin, actions, sim, iteration);
+      bestHeight = Math.max(bestHeight, sim.height);
       process.stdout.write(`${JSON.stringify({
         event: 'success',
         iteration,
@@ -387,7 +388,7 @@ for (let iteration = startIteration; iteration <= iterations; iteration++) {
         frames: reconstructActions(origin, actions).length,
         demonstration,
       })}\n`);
-      writeSearchCheckpoint(iteration);
+      writeStatus(iteration, started);
       process.exit(0);
     }
 

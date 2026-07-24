@@ -13,6 +13,8 @@ from torch.nn import functional as F
 from torch.distributions import Categorical
 
 from cell_bank import CellBankCoordinator, FRESH_CELL_ID
+from demo_dataset import DemoDataset
+from imitation_v5 import autoregressive_imitation_loss, tensor_demo_batch
 from r2d2 import (
     ACTION_COUNT,
     FALLING_COUNT,
@@ -28,11 +30,26 @@ from r2d2 import (
     TokenEncoder,
 )
 from v2_bridge import ParallelEnvBridge
+from trajectory_bank import TrajectoryStartCoordinator
 
 TRAINING_CONTRACT_VERSION = 2
 MODEL_ARCHITECTURE = 'ppo-v4-autoregressive-cell-bank-1'
 DEATH_CAUSE_NAMES = {0: 'success', 1: 'fell', 2: 'squished'}
 PHASE_NAMES = {0: 'unknown', 1: 'opening', 2: 'calm', 3: 'build', 4: 'surge', 5: 'release'}
+
+
+def parse_seeds(value):
+    result = []
+    for part in value.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        if '-' in part:
+            start, stop = (int(item) for item in part.split('-', 1))
+            result.extend(range(start, stop + 1))
+        else:
+            result.append(int(part))
+    return sorted(set(result))
 
 
 def action_components(actions):
@@ -232,10 +249,19 @@ def arguments():
     parser.add_argument('--cell-heldout-fraction', type=float, default=0.1)
     parser.add_argument('--cell-band-height', type=float, default=400)
     parser.add_argument('--cell-eval-envs', type=int, default=0)
+    parser.add_argument('--trajectory-bank', action='append', default=[])
+    parser.add_argument('--trajectory-start-probability', type=float, default=0.5)
+    parser.add_argument('--demo-dataset')
+    parser.add_argument('--demo-seeds', default='1-12')
+    parser.add_argument('--demo-minibatch', type=int, default=1024)
+    parser.add_argument('--demo-coef-start', type=float, default=0.0)
+    parser.add_argument('--demo-coef-end', type=float, default=0.0)
+    parser.add_argument('--demo-focus-positive-weight', type=float, default=1.0)
     parser.add_argument('--checkpoint-dir', default=str(Path.home() / 'dodgeblock-ppo-v2/checkpoints'))
     parser.add_argument('--checkpoint-interval', type=int, default=5_000_000)
     parser.add_argument('--log-interval', type=float, default=20.0)
     parser.add_argument('--resume')
+    parser.add_argument('--initialize-from')
     parser.add_argument('--no-amp', action='store_true')
     parser.add_argument('--compile', action='store_true')
     parser.add_argument('--compile-mode', default='default')
@@ -299,7 +325,7 @@ def atomic_checkpoint(path, payload):
 
 
 def training_contract(args):
-    return {
+    contract = {
         'version': TRAINING_CONTRACT_VERSION,
         'model_architecture': MODEL_ARCHITECTURE,
         'action_count': ACTION_COUNT,
@@ -323,18 +349,43 @@ def training_contract(args):
         'cell_band_height': args.cell_band_height,
         'cell_eval_envs': args.cell_eval_envs,
     }
+    if args.trajectory_bank:
+        contract.update({
+            'start_sampler': 'successful-trajectory-v5',
+            'trajectory_start_probability': args.trajectory_start_probability,
+            'demo_seeds': args.demo_seeds,
+            'demo_minibatch': args.demo_minibatch,
+            'demo_coef_start': args.demo_coef_start,
+            'demo_coef_end': args.demo_coef_end,
+            'demo_focus_positive_weight': args.demo_focus_positive_weight,
+        })
+    return contract
 
 
-def checkpoint_payload(agent, optimizer, coordinator, frames, args, contract):
-    return {
+def checkpoint_payload(
+    agent,
+    optimizer,
+    coordinator,
+    frames,
+    args,
+    contract,
+    bank_contract,
+    demo_contract,
+):
+    payload = {
         'agent': agent.state_dict(),
         'optimizer': optimizer.state_dict(),
         'frames': frames,
         'args': vars(args),
         'training_contract': contract,
-        'cell_bank_contract': CellBankCoordinator.file_contract(args.cell_bank),
+        'cell_bank_contract': bank_contract,
         'cell_coordinator': coordinator.state_dict(),
     }
+    if args.trajectory_bank:
+        payload['trajectory_bank_contract'] = bank_contract
+    if demo_contract:
+        payload['demo_dataset_contract'] = demo_contract
+    return payload
 
 
 def window_stats(records):
@@ -374,6 +425,16 @@ def explained_variance(prediction, target):
 
 def main():
     args = arguments()
+    if args.cell_bank and args.trajectory_bank:
+        raise ValueError('--cell-bank and --trajectory-bank are mutually exclusive')
+    if args.resume and args.initialize_from:
+        raise ValueError('--resume and --initialize-from are mutually exclusive')
+    if args.trajectory_bank and args.cell_eval_envs:
+        raise ValueError('trajectory starts do not use held-out evaluation environments')
+    if (args.demo_coef_start or args.demo_coef_end) and not args.demo_dataset:
+        raise ValueError('nonzero demonstration coefficients require --demo-dataset')
+    if args.demo_dataset and args.demo_minibatch <= 0:
+        raise ValueError('--demo-minibatch must be positive')
     env_count = args.workers * args.envs_per_worker
     training_env_count = env_count - args.cell_eval_envs
     if not 0 <= args.cell_eval_envs < env_count:
@@ -394,17 +455,46 @@ def main():
         raise RuntimeError('CUDA was requested but is unavailable')
 
     contract = training_contract(args)
-    coordinator = CellBankCoordinator(
-        args.cell_bank,
-        target_height=args.target_height,
-        seed=args.seed ^ 0xC311_BA4C,
-        probability=args.cell_bank_probability,
-        heldout_fraction=args.cell_heldout_fraction,
-        band_height=args.cell_band_height,
+    bank_paths = args.trajectory_bank or args.cell_bank
+    bank_contract = CellBankCoordinator.file_contract(bank_paths)
+    if args.trajectory_bank:
+        coordinator = TrajectoryStartCoordinator(
+            args.trajectory_bank,
+            seed=args.seed ^ 0xC311_BA4C,
+            probability=args.trajectory_start_probability,
+            band_height=args.cell_band_height,
+        )
+    else:
+        coordinator = CellBankCoordinator(
+            args.cell_bank,
+            target_height=args.target_height,
+            seed=args.seed ^ 0xC311_BA4C,
+            probability=args.cell_bank_probability,
+            heldout_fraction=args.cell_heldout_fraction,
+            band_height=args.cell_band_height,
+        )
+    demo_dataset = (
+        DemoDataset(args.demo_dataset, parse_seeds(args.demo_seeds))
+        if args.demo_dataset else None
     )
+    demo_contract = demo_dataset.contract() if demo_dataset else None
+    demo_rng = np.random.default_rng(args.seed ^ 0xD3A0_5EED)
     agent = ActorCriticNetwork().to(device)
     optimizer = torch.optim.AdamW(agent.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, eps=1e-5)
     frames = 0
+    if args.initialize_from:
+        initialized = torch.load(
+            args.initialize_from,
+            map_location=device,
+            weights_only=False,
+        )
+        agent.load_state_dict(initialized['agent'])
+        print(json.dumps({
+            'event': 'initialize',
+            'checkpoint': str(Path(args.initialize_from).resolve()),
+            'stage': initialized.get('stage'),
+            'source_samples': initialized.get('samples'),
+        }), flush=True)
     if args.resume:
         saved = torch.load(args.resume, map_location=device, weights_only=False)
         saved_contract = dict(saved.get('training_contract', {}))
@@ -414,8 +504,11 @@ def main():
                 'checkpoint training contract does not match this run; '
                 'use a new checkpoint directory for a changed objective or architecture'
             )
-        saved_banks = saved.get('cell_bank_contract', legacy_banks)
-        current_banks = CellBankCoordinator.file_contract(args.cell_bank)
+        saved_banks = saved.get(
+            'trajectory_bank_contract',
+            saved.get('cell_bank_contract', legacy_banks),
+        )
+        current_banks = bank_contract
         banks_changed = saved_banks != current_banks
         if banks_changed:
             print(json.dumps({
@@ -435,6 +528,8 @@ def main():
                 load_variant_starts=not banks_changed,
             )
         frames = int(saved.get('frames', 0))
+        if saved.get('demo_dataset_contract') != demo_contract:
+            raise ValueError('checkpoint demonstration dataset does not match this run')
     if args.compile:
         agent.compile(mode=args.compile_mode, dynamic=False)
 
@@ -445,7 +540,7 @@ def main():
         target_height=args.target_height,
         discount=args.gamma,
         reward_mode='target',
-        cell_banks=args.cell_bank,
+        cell_banks=bank_paths,
     )
     packet = bridge.read()
     eval_mask = np.zeros(env_count, dtype=bool)
@@ -524,10 +619,22 @@ def main():
         'learning_rate_start': args.learning_rate,
         'learning_rate_end': args.learning_rate_end,
         'cell_banks': args.cell_bank,
-        'cell_bank_probability': args.cell_bank_probability,
+        'trajectory_banks': args.trajectory_bank,
+        'start_sampler': (
+            'successful-trajectory-v5' if args.trajectory_bank else 'cell-v4'
+        ),
+        'start_probability': (
+            args.trajectory_start_probability
+            if args.trajectory_bank else args.cell_bank_probability
+        ),
         'cell_training': coordinator.metrics(False),
         'cell_heldout': coordinator.metrics(True),
         'cell_eval_envs': args.cell_eval_envs,
+        'demo_dataset': args.demo_dataset,
+        'demo_seeds': parse_seeds(args.demo_seeds) if demo_dataset else [],
+        'demo_frames': demo_dataset.frames if demo_dataset else 0,
+        'demo_coef_start': args.demo_coef_start,
+        'demo_coef_end': args.demo_coef_end,
         'compiled': args.compile,
     }), flush=True)
 
@@ -653,6 +760,10 @@ def main():
                 training_progress *
                 (args.direction_entropy_coef_end - args.direction_entropy_coef_start)
             )
+            demo_coef = (
+                args.demo_coef_start +
+                training_progress * (args.demo_coef_end - args.demo_coef_start)
+            )
             learning_rate = (
                 args.learning_rate +
                 training_progress * (args.learning_rate_end - args.learning_rate)
@@ -667,6 +778,7 @@ def main():
             approx_kls = []
             clip_fracs = []
             grad_norms = []
+            imitation_losses = []
             agent.train()
             for _epoch in range(args.epochs):
                 np.random.shuffle(indices)
@@ -702,6 +814,28 @@ def main():
                                 vertical_entropy + horizontal_entropy
                             )
                         )
+                        imitation_loss = None
+                        if demo_dataset and demo_coef:
+                            demo_batch = demo_dataset.sample(
+                                args.demo_minibatch,
+                                demo_rng,
+                            )
+                            demo_observation, demo_actions = tensor_demo_batch(
+                                demo_batch,
+                                device,
+                            )
+                            demo_logits, _demo_value = agent(demo_observation)
+                            imitation_loss, _imitation_metrics = (
+                                autoregressive_imitation_loss(
+                                    demo_logits,
+                                    demo_observation,
+                                    demo_actions,
+                                    focus_positive_weight=(
+                                        args.demo_focus_positive_weight
+                                    ),
+                                )
+                            )
+                            loss = loss + demo_coef * imitation_loss
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
                     grad_norm = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
@@ -717,6 +851,8 @@ def main():
                     approx_kls.append(float(approx_kl.item()))
                     clip_fracs.append(float(clip_frac.item()))
                     grad_norms.append(float(grad_norm))
+                    if imitation_loss is not None:
+                        imitation_losses.append(float(imitation_loss.item()))
                 if args.target_kl and approx_kls and approx_kls[-1] > args.target_kl:
                     break
             update_seconds = time.perf_counter() - update_started
@@ -729,6 +865,9 @@ def main():
                 'kl': np.mean(approx_kls),
                 'clip_frac': np.mean(clip_fracs),
                 'grad_norm': np.mean(grad_norms),
+                'imitation_loss': (
+                    np.mean(imitation_losses) if imitation_losses else 0.0
+                ),
                 'explained_variance': explained_variance(
                     flat_values[training_index_tensor],
                     flat_returns[training_index_tensor],
@@ -751,6 +890,10 @@ def main():
                     'cell_heldout': coordinator.metrics(True),
                     'policy_loss': round(float(np.mean([item['policy_loss'] for item in recent])), 5),
                     'value_loss': round(float(np.mean([item['value_loss'] for item in recent])), 5),
+                    'imitation_loss': round(float(np.mean([
+                        item['imitation_loss'] for item in recent
+                    ])), 5),
+                    'demo_coef': round(float(demo_coef), 6),
                     'entropy': {
                         component: round(float(np.mean([
                             item[f'{component}_entropy'] for item in recent
@@ -844,7 +987,16 @@ def main():
                 path = checkpoint_dir / f'ppo-v2-{frames:012d}.pt'
                 atomic_checkpoint(
                     path,
-                    checkpoint_payload(agent, optimizer, coordinator, frames, args, contract),
+                    checkpoint_payload(
+                        agent,
+                        optimizer,
+                        coordinator,
+                        frames,
+                        args,
+                        contract,
+                        bank_contract,
+                        demo_contract,
+                    ),
                 )
                 print(json.dumps({'event': 'checkpoint', 'frames': frames, 'path': str(path)}), flush=True)
                 next_checkpoint += args.checkpoint_interval
@@ -852,7 +1004,16 @@ def main():
         final_path = checkpoint_dir / f'ppo-v2-{frames:012d}.pt'
         atomic_checkpoint(
             final_path,
-            checkpoint_payload(agent, optimizer, coordinator, frames, args, contract),
+            checkpoint_payload(
+                agent,
+                optimizer,
+                coordinator,
+                frames,
+                args,
+                contract,
+                bank_contract,
+                demo_contract,
+            ),
         )
         bridge.close()
         print(json.dumps({

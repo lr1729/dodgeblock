@@ -23,12 +23,14 @@ from r2d2 import (  # noqa: E402
     world_discounts,
 )
 from cell_bank import CellBankCoordinator  # noqa: E402
+from imitation_v5 import autoregressive_imitation_loss  # noqa: E402
 from ppo_v2 import (  # noqa: E402
     ActorCriticNetwork,
     AutoregressiveActionDistribution,
     packet_observation,
     tensor_observation as ppo_tensor_observation,
 )
+from trajectory_bank import TrajectoryStartCoordinator  # noqa: E402
 from v2_bridge import ParallelEnvBridge  # noqa: E402
 
 
@@ -130,6 +132,22 @@ def main():
         ppo_observation,
     )
     assert conditional.mode().tolist() == [16, 5]
+    imitation_observation = {
+        key: value[:2].clone()
+        for key, value in ppo_observation.items()
+    }
+    imitation_observation['state'][:, 10] = 1
+    imitation_observation['state'][:, 12] = 0
+    imitation_observation['state'][:, 14] = 0
+    imitation_observation['state'][:, 19] = 0
+    imitation_actions = torch.tensor([16, 5])
+    imitation_loss, imitation_metrics = autoregressive_imitation_loss(
+        conditional_logits,
+        imitation_observation,
+        imitation_actions,
+    )
+    assert torch.isfinite(imitation_loss)
+    assert imitation_metrics['joint_accuracy'] == 1
 
     with tempfile.TemporaryDirectory() as temporary:
         synthetic_bank = Path(temporary) / 'synthetic-bank.json.gz'
@@ -173,6 +191,50 @@ def main():
         assert learned_weights[1] > learned_weights[0]
         wave.sample_clock = 10**12
         assert wave._cell_weight('band-0') <= 2.25
+
+        trajectory_paths = []
+        for seed in (4, 8):
+            path = Path(temporary) / f'trajectory-{seed}.json.gz'
+            with gzip.open(path, 'wt') as target:
+                json.dump({
+                    'version': 1,
+                    'targetHeight': 10_000,
+                    'seed': seed,
+                    'entries': [
+                        {
+                            'key': f'seed-{seed}-frame-{frame}',
+                            'frame': frame,
+                            'height': frame / 2,
+                            'previousAction': 0,
+                            'snapshot': {},
+                        }
+                        for frame in range(seed, seed + 3)
+                    ],
+                }, target)
+            trajectory_paths.append(path)
+        trajectory = TrajectoryStartCoordinator(
+            trajectory_paths,
+            seed=12,
+            probability=1,
+        )
+        selected = [trajectory.select() for _ in range(100)]
+        selected_seeds = {
+            trajectory.variants[variant_id]['seed']
+            for variant_id in selected
+        }
+        assert selected_seeds == {4, 8}
+        assert trajectory.select(heldout=True) == -1
+        trajectory.record_start(selected[0])
+        trajectory.record_result(selected[0], True)
+        saved_trajectory = trajectory.state_dict()
+        restored_trajectory = TrajectoryStartCoordinator(
+            trajectory_paths,
+            seed=99,
+            probability=1,
+        )
+        restored_trajectory.load_state_dict(saved_trajectory)
+        assert restored_trajectory.metrics()['successes'] == 1
+        assert restored_trajectory.select() == trajectory.select()
 
         subprocess.run([
             'node',
@@ -254,7 +316,7 @@ def main():
             str(Path(__file__).resolve().parents[1] / 'rl' / 'rescue-oracle.mjs'),
             '--case', str(death_files[0]),
             '--trials', '1',
-            '--horizon', '8',
+            '--horizon', '64',
             '--futures', '1',
             '--rewinds', '1,30',
         ], check=True, capture_output=True, text=True)
