@@ -77,6 +77,7 @@ if [[ "${DODGEBLOCK_EVAL_AFTER_TRAIN:-1}" == "1" ]]; then
   "$python_bin" "$root/rl/evaluate_ppo_v2.py" "$checkpoint_dir/latest.pt" \
     --workers "${DODGEBLOCK_EVAL_WORKERS:-8}" \
     --episodes "${DODGEBLOCK_EVAL_EPISODES:-256}" \
+    --target-height "${DODGEBLOCK_TARGET_HEIGHT:-10000}" \
     --device "${DODGEBLOCK_DEVICE:-cuda}"
 else
   exec "$python_bin" "${args[@]}"
