@@ -1,5 +1,10 @@
 # DodgeBlock RL
 
+[`RESEARCH-LOG.md`](./RESEARCH-LOG.md) records the experiment ledger: every
+phase's design, registered predictions, decisive measurements, falsified
+hypotheses, and the artifact index. Read it before changing the training
+design; append stage results as they land.
+
 ## Recurrent replay agent
 
 The recurrent v2 trainer is retained as an off-policy baseline. It is an R2D2-style recurrent,
