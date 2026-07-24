@@ -42,6 +42,7 @@ def arguments():
     parser.add_argument('--correction-train-seeds', default='')
     parser.add_argument('--correction-validation-seeds', default='')
     parser.add_argument('--correction-fraction', type=float, default=0.0)
+    parser.add_argument('--correction-repeat-coef', type=float, default=0.05)
     parser.add_argument(
         '--selection-metric',
         choices=('validation', 'decision_validation', 'correction_validation'),
@@ -76,7 +77,15 @@ def aggregate(metrics, weights):
     }
 
 
-def evaluate_dataset(agent, dataset, batch_size, device, autocast, focus_weight):
+def evaluate_dataset(
+    agent,
+    dataset,
+    batch_size,
+    device,
+    autocast,
+    focus_weight,
+    sticky_repeat_coef=None,
+):
     agent.eval()
     metrics = []
     weights = []
@@ -92,6 +101,7 @@ def evaluate_dataset(agent, dataset, batch_size, device, autocast, focus_weight)
                     actions,
                     targets=targets,
                     focus_positive_weight=focus_weight,
+                    sticky_repeat_coef=sticky_repeat_coef,
                 )
             values = {key: float(value) for key, value in result.items()}
             metrics.append(values)
@@ -105,7 +115,15 @@ def evaluate_dataset(agent, dataset, batch_size, device, autocast, focus_weight)
     }
 
 
-def evaluate_batch(agent, batch, batch_size, device, autocast, focus_weight):
+def evaluate_batch(
+    agent,
+    batch,
+    batch_size,
+    device,
+    autocast,
+    focus_weight,
+    sticky_repeat_coef=None,
+):
     metrics = []
     weights = []
     agent.eval()
@@ -124,6 +142,7 @@ def evaluate_batch(agent, batch, batch_size, device, autocast, focus_weight):
                     actions,
                     targets=targets,
                     focus_positive_weight=focus_weight,
+                    sticky_repeat_coef=sticky_repeat_coef,
                 )
             metrics.append({key: float(value) for key, value in result.items()})
             weights.append(len(actions))
@@ -188,6 +207,8 @@ def main():
         )
     if not 0 <= args.correction_fraction <= 1:
         raise ValueError('--correction-fraction must be between zero and one')
+    if args.correction_repeat_coef < 0:
+        raise ValueError('--correction-repeat-coef cannot be negative')
     if args.correction_fraction > 0 and not correction_train_seeds:
         raise ValueError(
             '--correction-fraction requires --correction-train-seeds'
@@ -286,6 +307,7 @@ def main():
             correction_validation.frames if correction_validation else 0
         ),
         'correction_fraction': args.correction_fraction,
+        'correction_repeat_coef': args.correction_repeat_coef,
         'selection_metric': args.selection_metric,
         'steps_per_epoch': steps_per_epoch,
         'focus_positive_weight': args.focus_positive_weight,
@@ -326,6 +348,10 @@ def main():
                     actions,
                     targets=targets,
                     focus_positive_weight=args.focus_positive_weight,
+                    sticky_repeat_coef=(
+                        args.correction_repeat_coef
+                        if use_correction else None
+                    ),
                 )
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -367,6 +393,7 @@ def main():
                 device,
                 autocast,
                 args.focus_positive_weight,
+                args.correction_repeat_coef,
             )[0]
             if correction_validation else None
         )

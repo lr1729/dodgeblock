@@ -101,6 +101,7 @@ def autoregressive_imitation_loss(
     *,
     targets=None,
     focus_positive_weight=1.0,
+    sticky_repeat_coef=None,
 ):
     sticky = len(logits) == 4
     if sticky:
@@ -148,6 +149,13 @@ def autoregressive_imitation_loss(
             (1 - repeat_targets) * repeat_logprobs[:, 0] +
             repeat_targets * repeat_logprobs[:, 1]
         ).mean()
+        if sticky_repeat_coef is not None:
+            loss = (
+                focus_loss +
+                vertical_loss +
+                horizontal_loss +
+                sticky_repeat_coef * repeat_loss
+            )
     else:
         loss = focus_loss + vertical_loss + horizontal_loss
     with torch.no_grad():
@@ -193,5 +201,8 @@ def autoregressive_imitation_loss(
         ).float().mean()
         metrics['joint_accuracy_lift_over_repeat'] = (
             metrics['joint_accuracy'] - metrics['repeat_target_fraction']
+        )
+        metrics['repeat_loss_coefficient'] = (
+            -1.0 if sticky_repeat_coef is None else sticky_repeat_coef
         )
     return loss, metrics

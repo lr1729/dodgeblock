@@ -186,6 +186,16 @@ def main():
     assert sticky_metrics['vertical_loss'] > 0
     assert sticky_metrics['horizontal_loss'] > 0
     assert torch.isfinite(sticky_metrics['joint_accuracy_lift_over_repeat'])
+    proposal_loss, proposal_metrics = autoregressive_imitation_loss(
+        sticky_logits,
+        imitation_observation,
+        imitation_actions,
+        targets=soft_targets,
+        sticky_repeat_coef=0.05,
+    )
+    assert torch.isfinite(proposal_loss)
+    assert proposal_metrics['repeat_loss_coefficient'] == 0.05
+    assert not torch.isclose(proposal_loss, sticky_loss)
 
     with tempfile.TemporaryDirectory() as temporary:
         synthetic_bank = Path(temporary) / 'synthetic-bank.json.gz'

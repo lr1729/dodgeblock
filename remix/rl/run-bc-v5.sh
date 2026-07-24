@@ -15,6 +15,7 @@ if [[ -n "${DODGEBLOCK_CORRECTION_TRAIN_SEEDS:-}" ]]; then
     --correction-dataset "${DODGEBLOCK_CORRECTION_DATASET:-$dataset}"
     --correction-train-seeds "$DODGEBLOCK_CORRECTION_TRAIN_SEEDS"
     --correction-fraction "${DODGEBLOCK_CORRECTION_FRACTION:-0.75}"
+    --correction-repeat-coef "${DODGEBLOCK_CORRECTION_REPEAT_COEF:-0.05}"
   )
 fi
 if [[ -n "${DODGEBLOCK_CORRECTION_VALIDATION_SEEDS:-}" ]]; then
