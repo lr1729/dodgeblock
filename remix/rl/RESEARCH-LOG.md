@@ -200,6 +200,20 @@ possibly via one extend; 1000 likely promotes; the first wall is expected at
 1750–2500 where shelter becomes mandatory. Escalator (i) fires iff a rung
 ≤ 2500 hits refine with shelter-in-surge still ≤ 0.2.
 
+**Rung 500 result + driver incident (2026-07-24 morning).** Det eval at 20M:
+target_success 0.111, median 200, p90 520, max 640 — extend band, and the
+det-vs-stochastic median gap closed (200 ≈ parity; stage-1's argmax degeneracy
+faded under the success objective). The driver correctly chose EXTEND at 03:13
+but implemented it as resume-with-larger-total — `total_frames` is part of the
+immutable training contract, so all three relaunch attempts died in <60s on the
+contract check and the driver stopped with NEEDS-ATTENTION. Cost: ~6.6h idle
+GPU (03:17–09:53). Fix: extension is now a fresh base-frames run in a new
+directory initialized from the rung's actor (schedule re-anneals — consistent
+with per-rung re-annealing everywhere else); the contract stays untouched.
+The check caught a real contract violation — the bug was mine, the guard
+earned its keep. Extension relaunched 09:56 as `rung-500-x3`; post-extend
+gate: promote at det ≥ 0.35, else refine to ~300.
+
 ## Falsified hypotheses
 
 1. Expected-height optimization converges to reliable completion (v1).

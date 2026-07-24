@@ -7,8 +7,11 @@ run.log, applies pre-registered gates, and launches the next rung initialized
 from the previous actor. Registered rules (RESEARCH-LOG.md, 2026-07-24):
 
   det target_success >= 0.50                 -> promote to next rung
-  0.10 <= det < 0.50                         -> extend once (+base frames);
-                                                after extension >= 0.35 promotes
+  0.10 <= det < 0.50                         -> extend once: a fresh run of base
+                                                frames initialized from the rung's
+                                                actor (a changed total under
+                                                --resume violates the training
+                                                contract); >= 0.35 then promotes
   det < 0.10 and stochastic (384 ep) >= 0.30 -> extend once (det degeneracy)
   det < 0.10 and stochastic < 0.30           -> refine: geometric-midpoint rung,
                                                 initialized from the failed actor
@@ -127,7 +130,8 @@ class Ladder:
 
     # ---- launching ------------------------------------------------------
 
-    def launch(self, target, run_dir, total_frames, init_from=None):
+    def launch(self, target, run_dir, total_frames, init_from=None,
+               extended=False, retries=0):
         if self.state['launches'] >= MAX_LAUNCHES:
             self.stop('NEEDS-ATTENTION', f'launch cap {MAX_LAUNCHES} reached')
             return False
@@ -163,10 +167,8 @@ class Ladder:
             'dir': str(run_dir),
             'unit': unit,
             'total_frames': total_frames,
-            'extended': self.state.get('current', {}).get('extended', False)
-            if str(run_dir) == self.state.get('current', {}).get('dir') else False,
-            'retries': self.state.get('current', {}).get('retries', 0)
-            if str(run_dir) == self.state.get('current', {}).get('dir') else 0,
+            'extended': extended,
+            'retries': retries,
         }
         self.save()
         log(f'launched {unit}: target={target} frames={total_frames} '
@@ -215,7 +217,8 @@ class Ladder:
             current['retries'] += 1
             self.save()
             log(f'rung {target}: unit exited without eval, retry {current["retries"]} (auto-resume)')
-            self.launch(target, run_dir, current['total_frames'])
+            self.launch(target, run_dir, current['total_frames'],
+                        extended=current['extended'], retries=current['retries'])
             return
 
         success = float(evaluation.get('target_success', 0.0))
@@ -267,12 +270,12 @@ class Ladder:
         self.launch_next_pending(init_from=str(checkpoint.resolve()))
 
     def extend(self, current, summary, reason):
-        current['extended'] = True
-        current['retries'] = 0
-        total = current['total_frames'] + base_frames(current['target'])
-        self.append_result(f'{summary} → **EXTEND** to {total} ({reason})')
-        self.save()
-        self.launch(current['target'], current['dir'], total)
+        target = current['target']
+        checkpoint = (Path(current['dir']) / 'checkpoints/latest.pt').resolve()
+        run_dir = self.state_dir / f"rung-{target}-x{self.state['launches']}"
+        self.append_result(f'{summary} → **EXTEND** in {run_dir.name} ({reason})')
+        self.launch(target, run_dir, base_frames(target),
+                    init_from=str(checkpoint), extended=True)
 
     def refine(self, current, summary, reason):
         failed_target = current['target']
