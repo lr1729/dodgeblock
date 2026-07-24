@@ -12,6 +12,8 @@ futures="${DODGEBLOCK_COUNTERFACTUAL_FUTURES:-2}"
 branch_frames="${DODGEBLOCK_COUNTERFACTUAL_BRANCH_FRAMES:-6}"
 stride="${DODGEBLOCK_COUNTERFACTUAL_STRIDE:-60}"
 max_states="${DODGEBLOCK_COUNTERFACTUAL_MAX_STATES:-128}"
+selection_mode="${DODGEBLOCK_COUNTERFACTUAL_SELECTION_MODE:-mixed}"
+control_interval="${DODGEBLOCK_COUNTERFACTUAL_CONTROL_INTERVAL:-1}"
 
 mapfile -t demos < <(find "$demo_dir" -type f -name 'demo-*.json.gz' | sort -V)
 if (( ${#demos[@]} < workers )); then
@@ -39,6 +41,8 @@ for ((index = 0; index < workers; index++)); do
     --horizon "$horizon" \
     --futures "$futures" \
     --branch-frames "$branch_frames" \
+    --selection-mode "$selection_mode" \
+    --control-interval "$control_interval" \
     --stride "$stride" \
     --max-states "$max_states" \
     > "$output_dir/logs/shard-$shard.log" 2>&1 &
