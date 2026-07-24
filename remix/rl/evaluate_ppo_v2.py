@@ -127,12 +127,15 @@ def main():
 
     bootstrap_rng = np.random.default_rng(args.seed ^ 0xB0057A9)
     print(json.dumps({
+        'event': 'evaluation',
         'checkpoint': args.checkpoint,
         'training_frames': int(saved.get('frames', 0)),
         'episodes': args.episodes,
         'seed': args.seed,
         'stochastic': args.stochastic,
         'control_interval': control_interval,
+        'target_height': args.target_height,
+        'target_success': round(float(np.mean(outcomes == 'success')), 4),
         'mean_height': round(float(heights.mean()), 2),
         'mean_height_ci95': bootstrap_interval(heights, np.mean, bootstrap_rng),
         'median_height': round(float(np.median(heights)), 2),
