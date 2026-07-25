@@ -6,6 +6,7 @@
 // usage: node rl/render_trace.mjs trace.json out.mp4
 import fs from 'node:fs';
 import os from 'node:os';
+import zlib from 'node:zlib';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -19,12 +20,23 @@ import {
 
 const [traceFile, outFile] = process.argv.slice(2);
 if (!traceFile || !outFile) throw new Error('usage: render_trace.mjs trace.json out.mp4');
-const trace = JSON.parse(fs.readFileSync(traceFile));
-const seed = (trace.bridge_seed + trace.env_index * 0x9e3779b9 + trace.episode * 0x85ebca6b) >>> 0;
+// Accepts either a record_trace.py trace or a go-explore demonstration
+// (`demo-*.json.gz`), which carries its own seed and a verifiable final hash.
+const trace = JSON.parse(
+  traceFile.endsWith('.gz')
+    ? zlib.gunzipSync(fs.readFileSync(traceFile))
+    : fs.readFileSync(traceFile),
+);
+const seed = trace.bridge_seed === undefined
+  ? trace.seed
+  : (trace.bridge_seed + trace.env_index * 0x9e3779b9 + trace.episode * 0x85ebca6b) >>> 0;
 const actions = Buffer.from(trace.actions, 'base64');
 if (actions.length !== trace.frames) throw new Error('action length mismatch');
+const INITIAL_PREVIOUS = trace.initialPreviousAction ?? 0;
+const HEIGHT_SCALE = Math.max(1000, trace.height ?? trace.targetHeight ?? 1600);
 
 const sim = new Sim(seed, { rules: { autoGuard: false, checkpoints: false } });
+if (trace.initialSnapshot) sim.restore(trace.initialSnapshot);
 const W = GAME_W, H = GAME_H, SCALE = 2;
 const frame = Buffer.alloc(W * H * 3);
 const dashTrail = [];
@@ -136,7 +148,7 @@ function draw() {
     fillRect(10 + pip * 16, 40, 12, 12, charged ? 0x18e0f5 : 0x33415c, charged ? 1 : 0.7);
     outlineRect(10 + pip * 16, 40, 12, 12, 0x0d2233, 2, 0.8);
   }
-  const fraction = Math.min(1, sim.height / 1600);
+  const fraction = Math.min(1, sim.height / HEIGHT_SCALE);
   fillRect(W - 10, 10, 8, H - 20, 0x33415c, 0.7);
   fillRect(W - 10, 10 + (H - 20) * (1 - fraction), 8, (H - 20) * fraction, 0x2fbf6b);
 }
@@ -201,9 +213,10 @@ function writeFrame() {
 // subtitle file complete before encoding starts.
 {
   const probe = new Sim(seed, { rules: { autoGuard: false, checkpoints: false } });
+  if (trace.initialSnapshot) probe.restore(trace.initialSnapshot);
   let dashes = 0;
   probe.events.on('focusStart', () => { dashes++; });
-  let previous = 0, index = 0;
+  let previous = INITIAL_PREVIOUS, index = 0;
   for (const action of actions) {
     probe.step(heldActionInput(action, previous));
     previous = action;
@@ -214,7 +227,7 @@ function writeFrame() {
 }
 writeSubtitles(subtitleFile);
 
-let previous = 0;
+let previous = INITIAL_PREVIOUS;
 for (const action of actions) {
   sim.step(heldActionInput(action, previous));
   previous = action;
@@ -238,11 +251,15 @@ fs.unlinkSync(subtitleFile);
 
 const verdict = {
   replayHeight: sim.height,
-  traceHeight: trace.height,
-  match: Math.abs(sim.height - trace.height) < 1e-6,
+  expectedHeight: trace.height ?? trace.targetHeight,
+  match: trace.finalHash
+    ? sim.hash() === trace.finalHash
+    : Math.abs(sim.height - trace.height) < 1e-6,
+  verifiedBy: trace.finalHash ? 'finalHash' : 'height',
   dead: sim.dead,
   frames: actions.length,
   seconds: Math.round(actions.length / 60),
+  climbHeightPerSecond: +(sim.height / (actions.length / 60)).toFixed(1),
 };
 console.log(JSON.stringify(verdict));
 if (!verdict.match) process.exit(1);
