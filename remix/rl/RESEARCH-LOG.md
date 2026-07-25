@@ -254,6 +254,34 @@ Focus is a ~3-lives-per-10-layers resource being spent at near-random times —
 the largest identified untapped hazard reduction, and a natural target for
 SIL amplification rather than shaping.
 
+**Focus/dash audit (`rl/audit-trace.mjs`, rung-500 actor, 1520-height episode).**
+Mechanism verified sound, usage verified worthless:
+
+- 15 press-edges → 15 aims → 15 dashes, 0 wasted; Auto Guard 0 fires (hardcore).
+- The focus logit is correctly masked when no charge is usable, and aim
+  direction is re-steerable every aim frame (`updateFocusDirection`), with
+  world-scale-correct credit (`gamma ** world_scale`), so neither perception
+  nor credit plumbing explains the behaviour.
+- Charges spent 15 of ~15.7 earned, **mean 7.5 frames held before spending**:
+  dash *timing* is set by the recharge clock, not by state — the same
+  state-independence pathology found in the v5 teacher, now self-inflicted.
+- Dashes are aimed **upward 10/11** (intent learned) but produce nothing:
+  mean height gain in the 90 frames after a dash **21.8 vs 30.4 baseline
+  (lift −8.6)**, 8 of 11 gain exactly zero, 2 blocks shattered per 15 dashes.
+  A dash rises ~50 px into empty air; height only counts *stable* height, so
+  it lands back where it started.
+
+Interpretation: the policy learned a ritual ("press when charged, aim up"),
+not a tool. The user's two real uses — dash for traversal, and dash to break
+towers into shelter — are unlearned, and the second is currently *unlearnable*:
+cover forms at 3–5k, the policy dies at ~1.5k, so no training state exists
+where breaking a tower pays. Fixing focus strategy now would repeat the v4
+error of training the spending before the accumulation. Registered: re-audit
+focus at rung ≥ 2500 (towers exist there); if dashes are still ritual, SIL is
+the first lever, and only then will there be successful held-charge episodes
+worth amplifying. `dash_effectiveness.lift_over_baseline` is the tracked
+number.
+
 **Registered next experiment (one flag, no code):** `--gamma` per world frame
 is already plumbed; γ = 1 gives the objective *zero* time preference even
 though exposure time is now the measured hazard driver. A/B a discount with
