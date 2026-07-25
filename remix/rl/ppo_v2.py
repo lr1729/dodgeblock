@@ -41,6 +41,11 @@ MODEL_ARCHITECTURE = 'ppo-v4-autoregressive-cell-bank-1'
 STICKY_MODEL_ARCHITECTURE = 'ppo-v5-sticky-autoregressive-1'
 DEATH_CAUSE_NAMES = {0: 'success', 1: 'fell', 2: 'squished'}
 PHASE_NAMES = {0: 'unknown', 1: 'opening', 2: 'calm', 3: 'build', 4: 'surge', 5: 'release'}
+# How much a 10k demonstration shelters in each phase, measured 2026-07-25 by
+# replaying it through the sim's own cover test. Used as the phase weighting of
+# the shaping potential so the target comes from data, not from intuition.
+PHASE_COVER_WEIGHT = np.array([0.0, 0.0, 0.72, 0.90, 0.91, 1.0], np.float32)
+FOCUS_STATE_INDEX = 10
 
 
 def parse_seeds(value):
@@ -283,6 +288,8 @@ def arguments():
         default='target',
     )
     parser.add_argument('--death-penalty', type=float, default=1.0)
+    parser.add_argument('--shaping-cover', type=float, default=0.0)
+    parser.add_argument('--shaping-charge', type=float, default=0.0)
     parser.add_argument('--alive-reward', type=float, default=0.0)
     parser.add_argument('--cell-bank', action='append', default=[])
     parser.add_argument('--cell-bank-probability', type=float, default=0.8)
@@ -378,6 +385,8 @@ def training_contract(args):
         'reward_mode': args.reward_mode,
         'death_penalty': args.death_penalty,
         'alive_reward': args.alive_reward,
+        'shaping_cover': args.shaping_cover,
+        'shaping_charge': args.shaping_charge,
         'gamma': args.gamma,
         'gae_lambda': args.gae_lambda,
         'total_frames': args.total_frames,
@@ -695,6 +704,8 @@ def main():
         'compiled': args.compile,
     }), flush=True)
 
+    shaping = bool(args.shaping_cover or args.shaping_charge)
+    previous_potential = np.zeros(env_count, np.float32)
     try:
         while frames < args.total_frames and not stop:
             collect_started = time.perf_counter()
@@ -738,7 +749,28 @@ def main():
                         sheltered_steps[int(phase)] += int(np.sum(
                             packet['step_sheltered'][phase_mask]
                         ))
-                rollout['rewards'][t].copy_(torch.from_numpy(packet['rewards']))
+                rewards = packet['rewards']
+                if shaping:
+                    # F = Phi(s') - Phi(s). Potential-based, so the optimal
+                    # policy is provably unchanged; it only shortens the credit
+                    # path from "take cover now" to "survive the surge in three
+                    # seconds", which sparse terminal reward cannot resolve
+                    # (dP ~ 0.003 per layer against sigma ~ 0.5).
+                    potential = (
+                        args.shaping_cover
+                        * packet['step_sheltered'].astype(np.float32)
+                        * PHASE_COVER_WEIGHT[np.clip(packet['step_phases'], 0, 5)]
+                        + args.shaping_charge
+                        * packet['state'][:, FOCUS_STATE_INDEX]
+                    ).astype(np.float32)
+                    # A terminal state has potential 0 so the telescoping sum
+                    # stays exact and dying is never rewarded. The env resets in
+                    # the same step it dies, so `potential` already describes the
+                    # NEXT episode's first state and is the right carry-forward.
+                    finished = packet['dones'].astype(bool)
+                    rewards = rewards + np.where(finished, 0.0, potential) - previous_potential
+                    previous_potential = potential
+                rollout['rewards'][t].copy_(torch.from_numpy(np.asarray(rewards, np.float32)))
                 rollout['dones'][t].copy_(torch.from_numpy(packet['dones']).float())
                 rollout['world_scales'][t].copy_(torch.from_numpy(packet['world_scales']))
                 done_indices = np.flatnonzero(packet['dones'])

@@ -224,6 +224,12 @@ class ParallelEnvBridge:
     def reset(self, reset_ids=None):
         return self.step(np.full(self.count, 255, np.uint8), reset_ids)
 
+    def save_slots(self, slots):
+        return self.step(np.full(self.count, 253, np.uint8), slots)
+
+    def restore_slots(self, slots):
+        return self.step(np.full(self.count, 252, np.uint8), slots)
+
     def close(self):
         for worker in self.workers:
             worker.close()

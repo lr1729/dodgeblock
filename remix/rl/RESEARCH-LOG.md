@@ -702,6 +702,62 @@ could find it *and* hand it back to the policy.
 from matched states, ExIt has no teacher and this whole direction is dead —
 that is the first measurement to take, before any distillation is wired.
 
+### v8 result — value-guided search is worse than the policy (2026-07-25)
+
+Built `rl/value_search.py` (Python-side beam search; leaves scored by the
+trained critic) on a new simulator primitive: action 253/252 SAVE/RESTORE
+against a per-worker slot table, so snapshots never cross the wire. The
+primitive is verified bitwise (restore -> replay 200 actions -> every packet
+field identical, frame counter unchanged). Two non-obvious requirements found by
+ablation: restore must also carry `previousAction` (it is part of the
+observation) and `episode` (or replays diverge after an in-branch death).
+
+**Measured at target 600, against the same checkpoint whose policy scores
+det 0.344:**
+
+| searcher | success | median height |
+| --- | --- | --- |
+| greedy on height (JS beam, 15-frame options) | — | 400 @ 9.6 h/s |
+| value-guided, 15-frame options | 0.00 | 140 |
+| value-guided, 6-frame options | 0.00 | 200 |
+| value-guided, 3-frame options | 0.00 | 80 |
+| **value-guided, 1-frame (pure greedy on Q)** | **0.00** | **40** |
+| **the policy itself, same harness (control)** | **0.44** | **560** |
+
+**Process note, and the reason the control existed.** The first control run
+returned 0.0 for the policy too, which would have been reported as "search is
+dead" on a broken harness. The fault was mine: the env resets in the same step
+it dies, so `current_heights` already holds the NEXT episode's zero — the height
+at death lives in `heights`. After the fix the control reproduces the known
+policy performance, and only then are the search numbers admissible.
+
+**What this means.** Greedy w.r.t. a one-step Q is exactly the case the policy
+improvement theorem covers: it cannot be worse than the policy unless the Q
+estimate is wrong. It is the *worst* row in the table. So the critic, despite
+EV 0.94, cannot rank neighbouring states. EV measures fit to returns on the
+policy's own distribution; it says nothing about action-level resolution. With
+18 near-identical successors, argmax selects the critic's ERROR, and compounding
+that for thousands of frames walks a trajectory adversarial to the value
+function. This is the same dP ~ 0.003 against sigma ~ 0.5 wall seen from the
+planning side, and it is consistent with the earlier ln(3) result: **search
+cannot exploit a flat, noisy Q — it amplifies value error.**
+
+It also explains Go-Explore: its power is *retries*, not per-decision quality,
+which is exactly the v5a finding that competence lives in retry-selection. A
+live policy cannot retry.
+
+**Consequence for the design.** ExIt/AlphaZero-style search-as-teacher is dead
+here unless the critic's action-level resolution improves by orders of
+magnitude. That elevates external dense signal from optional to necessary:
+when the critic cannot resolve action differences, shaping is the only source
+of a usable gradient. Implemented accordingly in `ppo_v2.py`:
+`--shaping-cover` and `--shaping-charge` add F = Phi(s') - Phi(s) with
+Phi = a * cover * PHASE_COVER_WEIGHT[phase] + b * charges, where the phase
+weights are the measured demonstration cover profile. Potential-based, so the
+optimum is provably unchanged (Ng, Harada & Russell 1999); terminal potential is
+0 so dying is never rewarded, and the carry-forward is correct across the
+env's same-step auto-reset.
+
 ## Falsified hypotheses
 
 1. Expected-height optimization converges to reliable completion (v1).

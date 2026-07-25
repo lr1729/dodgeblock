@@ -165,6 +165,41 @@ function updateDeathCapture(entry, action) {
   entry.captureActions.push({ episodeLength: entry.episodeLength, action });
 }
 
+// Tree-search checkpoints. Snapshots stay in this worker; Python only ever
+// names a slot. Everything the replay after a rewind depends on is stored,
+// including the episode counter that seeds the sim if the branch dies.
+const slots = new Map();
+
+function saveSlot(entry, slot) {
+  slots.set(slot, {
+    snapshot: entry.sim.snapshot(),
+    previousAction: entry.previousAction,
+    episodeReturn: entry.episodeReturn,
+    episodeLength: entry.episodeLength,
+    episode: entry.episode,
+    startHeight: entry.startHeight,
+    curriculumSource: entry.curriculumSource,
+    cellVariantId: entry.cellVariantId,
+    captureAnchors: entry.captureAnchors.slice(),
+    captureActions: entry.captureActions.slice(),
+  });
+}
+
+function restoreSlot(entry, slot) {
+  const saved = slots.get(slot);
+  if (!saved) throw new Error(`unknown slot ${slot}`);
+  entry.sim.restore(saved.snapshot);
+  entry.previousAction = saved.previousAction;
+  entry.episodeReturn = saved.episodeReturn;
+  entry.episodeLength = saved.episodeLength;
+  entry.episode = saved.episode;
+  entry.startHeight = saved.startHeight;
+  entry.curriculumSource = saved.curriculumSource;
+  entry.cellVariantId = saved.cellVariantId;
+  entry.captureAnchors = saved.captureAnchors.slice();
+  entry.captureActions = saved.captureActions.slice();
+}
+
 function isSheltered(sim) {
   const player = sim.player;
   return sim.blocks.blocks.some((block) => {
@@ -336,6 +371,14 @@ function step(actions, resetIds) {
     if (actions[index] === 254) continue;
     if (actions[index] === 255) {
       reset(entry, index, resetIds[index]);
+      continue;
+    }
+    if (actions[index] === 253) {
+      if (resetIds[index] >= 0) saveSlot(entry, resetIds[index]);
+      continue;
+    }
+    if (actions[index] === 252) {
+      if (resetIds[index] >= 0) restoreSlot(entry, resetIds[index]);
       continue;
     }
     const beforeHeight = entry.sim.height;
