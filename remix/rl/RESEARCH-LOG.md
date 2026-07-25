@@ -702,6 +702,44 @@ could find it *and* hand it back to the policy.
 from matched states, ExIt has no teacher and this whole direction is dead —
 that is the first measurement to take, before any distillation is wired.
 
+### CORRECTION to the v8 search result (2026-07-25, later)
+
+The first v8 table was measured with a fatal bug in my own harness: **`dones`
+fires on SUCCESS as well as death** — reaching the target ends the episode — and
+`died |= dones` therefore marked *winning* branches dead and pruned them.
+`search_success` was structurally incapable of being non-zero; the 0.00 column
+was guaranteed by construction, not measured. Fixed (success is now a terminal
+win with value 1, and `died = dones & ~successes`).
+
+Re-measured after the fix, target 600, beam 1, 6-frame options, same harness
+whose policy control reproduces the known result:
+
+| controller | median height | success |
+| --- | --- | --- |
+| **the policy itself** | **560** | **0.44** |
+| value-guided search | 60 | 0.00 |
+| random option selection | 20 | 0.00 |
+| height-greedy search | 0 | 0.00 |
+
+**The corrected conclusion is narrower and more interesting than the one it
+replaces.** The critic is NOT useless: V-guided beats random 3x and beats
+height-greedy outright, so it carries real ranking signal. But every search
+variant is ~10x worse than the policy. The right statement is therefore:
+*short-horizon greedy improvement over this critic is not a policy improvement* —
+not "search cannot work here".
+
+The theory says exactly this should happen. Greedy improvement is bounded by
+2*gamma*epsilon/(1-gamma) in value error epsilon; **we run gamma = 1, where that
+bound is infinite.** Undiscounted, 3,000-step horizon, per-action value
+differences far below the critic's error is the textbook pathological case. The
+policy's action distribution encodes a whole multi-step behaviour learned over
+hundreds of millions of frames; one-step argmax over a noisy V discards it.
+
+Untested and still open: deeper search (beam >> 1 with long horizons), a
+calibrated/ensembled critic, or pessimistic (lower-confidence-bound) selection
+instead of argmax. Search is not established as dead — one-step greedy over
+*this* critic is.
+
 ### v8 result — value-guided search is worse than the policy (2026-07-25)
 
 Built `rl/value_search.py` (Python-side beam search; leaves scored by the
@@ -757,6 +795,42 @@ weights are the measured demonstration cover profile. Potential-based, so the
 optimum is provably unchanged (Ng, Harada & Russell 1999); terminal potential is
 0 so dying is never rewarded, and the carry-forward is correct across the
 env's same-step auto-reset.
+
+### Literature review — three findings that change the plan (2026-07-25)
+
+1. **Marginal occupancy matching is behaviourally underdetermined.** Agents with
+   identical state visitation can behave oppositely (Burnwal et al.,
+   "Learning from Observation: A Survey of Recent Advances", arXiv:2509.19379).
+   Matching cover-fraction 0.427 does not pin down behaviour — "shelter then
+   climb" and "climb then cower" share a marginal. **The v7 potential
+   `Phi = a*cover(s)*risk(phase)` is provably underdetermined and should be
+   redefined over cover-ENTRY transitions, not the cover marginal.** The sweep
+   now running uses the marginal form; treat its result as a lower bound.
+2. **The escalator-(i) collapse was structural, not a coefficient problem.**
+   DEMO3 (arXiv:2503.01837, ICML 2025) bounds the auxiliary term as
+   `r + beta*tanh(delta)` with beta chosen so the bonus *cannot* push one
+   stage's shaped reward into another's range — structurally incapable of
+   overriding the sparse task reward. **Bound the bonus; do not tune its
+   weight.** Directly transplantable: our 250 layers are DEMO3's stages.
+3. **A demonstration-free replacement for the hand-designed potential.**
+   SVM (arXiv:2606.23640, 2026) trains a discriminator by plain BCE between the
+   agent's OWN successful and unsuccessful episodes and adds a clipped log-odds
+   bonus. No demonstrations, so it sidesteps the survivorship and search-residue
+   problems entirely; positives are realizable by construction; the occupancy
+   structure is discovered rather than hand-encoded. Our 0.34 success rate
+   supplies both classes in healthy proportion. Caveat: its guarantee assumes
+   determinism, and our sim is deterministic only given a seed the policy cannot
+   see.
+
+Also struck on evidence: the DICE family (O-DICE, arXiv:2402.00348, shows
+ValueDICE *underperforming plain BC* on single-trajectory imitation), and
+discriminator gradient penalty as a default stabiliser (DecompGAIL,
+arXiv:2510.06913 — GP enforces smoothness, but collision-like death conditions
+need sharp decision boundaries).
+
+**Revised priority: SVM with a DEMO3-style bounded bonus** — self-generated
+success/failure discriminator, clipped log-odds, refreshed per rung, no
+demonstrations and no hand-specified potential.
 
 ## Falsified hypotheses
 

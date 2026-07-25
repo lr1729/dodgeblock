@@ -45,13 +45,16 @@ def option_table(option_frames, focus_press):
 
 
 class ValueSearch:
-    def __init__(self, agent, bridge, device, options, beam, discount_per_frame):
+    def __init__(self, agent, bridge, device, options, beam, discount_per_frame,
+                 score_mode='value', rng=None):
         self.agent = agent
         self.bridge = bridge
         self.device = device
         self.options = options
         self.beam = beam
         self.discount = discount_per_frame
+        self.score_mode = score_mode
+        self.rng = rng if rng is not None else np.random.default_rng(0)
         self.envs = bridge.count
         if beam * len(options) > self.envs:
             raise ValueError(
@@ -78,21 +81,37 @@ class ValueSearch:
         programs = [self.options[lane % len(self.options)][2] for lane in range(lanes)]
         depth = len(programs[0])
         died = np.zeros(self.envs, bool)
-        gained = np.zeros(self.envs, np.float32)
+        won = np.zeros(self.envs, bool)
+        reached = np.zeros(self.envs, np.float32)
         start_heights = packet['current_heights'].copy()
         for step in range(depth):
             actions = np.full(self.envs, HOLD, np.uint8)
             for lane in range(lanes):
                 actions[lane] = programs[lane][step]
             packet = self.bridge.step(actions)
-            died |= packet['dones'].astype(bool)
-        gained = packet['current_heights'] - start_heights
+            # `dones` fires on SUCCESS as well as death — reaching the target
+            # ends the episode. Treating them alike prunes winning branches and
+            # makes success structurally unreachable.
+            success = packet['successes'].astype(bool)
+            finished = packet['dones'].astype(bool)
+            newly_won = success & ~won & ~died
+            reached = np.where(newly_won, packet['heights'], reached)
+            won |= success
+            died |= finished & ~success
+        gained = np.where(won, reached - start_heights,
+                          packet['current_heights'] - start_heights)
 
-        values, _entropy = self.evaluate(packet)
-        # A death inside the option is terminal: its value is 0, not V(leaf).
+        if self.score_mode == 'random':
+            # Control: is the critic's ranking better than no ranking at all?
+            values = self.rng.random(self.envs).astype(np.float32)
+        elif self.score_mode == 'height':
+            values = gained.astype(np.float32)
+        else:
+            values, _entropy = self.evaluate(packet)
         values = np.where(died, 0.0, values)
+        values = np.where(won, 1.0, values)      # terminal win
         scores = values * (self.discount ** depth)
-        return scores[:lanes], gained[:lanes], ~died[:lanes], packet
+        return scores[:lanes], gained[:lanes], ~died[:lanes], won[:lanes]
 
     def run_policy(self, max_frames, target):
         """Control: play the policy itself through this same harness. If this
@@ -134,8 +153,18 @@ class ValueSearch:
         started = time.perf_counter()
 
         for ply in range(max_options):
-            scores, gained, alive, _packet = self.expand(root_slot, branch_slots)
+            scores, gained, alive, won = self.expand(root_slot, branch_slots)
             lanes = len(branch_slots) * len(self.options)
+            if won.any():
+                lane = int(np.argmax(won))
+                parent = lane // len(self.options)
+                return {
+                    'stopped': 'target',
+                    'actions': branch_actions[parent] + list(
+                        self.options[lane % len(self.options)][2]),
+                    'height': float(branch_height[parent] + gained[lane]),
+                    'seconds': round(time.perf_counter() - started, 1),
+                }
             order = np.argsort(-scores[:lanes])
             keep = [lane for lane in order if alive[lane]][:self.beam]
             if not keep:
@@ -192,6 +221,7 @@ def main():
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--log-every', type=int, default=10)
     parser.add_argument('--mode', default='value', choices=('value', 'policy'))
+    parser.add_argument('--score', default='value', choices=('value', 'random', 'height'))
     parser.add_argument('--episodes', type=int, default=1)
     parser.add_argument('--baseline', type=float, default=None,
                         help='policy det success at this target, for comparison')
@@ -216,7 +246,8 @@ def main():
         search = ValueSearch(
             agent, bridge, device,
             option_table(args.option_frames, args.focus_press),
-            args.beam, args.discount)
+            args.beam, args.discount, score_mode=args.score,
+            rng=np.random.default_rng(args.seed))
         for episode in range(args.episodes):
             bridge.reset()
             result = (search.run_policy(12000, args.target_height)
