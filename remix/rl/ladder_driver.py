@@ -31,7 +31,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-RUNGS = [500, 1000, 1750, 2500, 4000, 6500, 10000]
+FINAL_TARGET = 10000
+# Rung sizing is derived, not tabulated: per-layer survival measured at the rung
+# just passed predicts success at any next target, so aim the next rung at
+# AIM_SUCCESS. Measured 2026-07-24: a tabulated 500 -> 1000 step (x2) collapsed
+# to det 0.021 — the signal desert — and cost a full rung of wall-clock.
+AIM_SUCCESS = 0.35
+MIN_STEP = 1.08
+MAX_STEP = 1.5
 PROMOTE = 0.50
 EXTEND_LOW = 0.10
 POST_EXTEND_PROMOTE = 0.35
@@ -77,6 +84,17 @@ def base_frames(target):
 def per_layer_survival(success, target):
     layers = max(1.0, target / 40.0)
     return success ** (1.0 / layers) if success > 0 else 0.0
+
+
+def next_target(target, success):
+    """Height whose predicted success is AIM_SUCCESS, from measured per-layer
+    survival, bounded to a sane step."""
+    survival = per_layer_survival(success, target)
+    if not 0.0 < survival < 1.0:
+        return min(FINAL_TARGET, round50(target * MIN_STEP))
+    predicted = 40.0 * math.log(AIM_SUCCESS) / math.log(survival)
+    bounded = min(max(predicted, target * MIN_STEP), target * MAX_STEP)
+    return min(FINAL_TARGET, round50(bounded))
 
 
 def round50(value):
@@ -265,22 +283,26 @@ class Ladder:
 
     def promote(self, current, evaluation, summary):
         target = current['target']
-        checkpoint = Path(current['dir']) / 'checkpoints/latest.pt'
+        success = float(evaluation.get('target_success', 0.0))
+        checkpoint = (Path(current['dir']) / 'checkpoints/latest.pt').resolve()
         self.state['passed'].append({
             'target': target,
-            'checkpoint': str(checkpoint.resolve()),
-            'det_success': float(evaluation.get('target_success', 0.0)),
+            'checkpoint': str(checkpoint),
+            'det_success': success,
+            'per_layer': round(per_layer_survival(success, target), 4),
             'median_height': evaluation.get('median_height'),
-            'p90_height': evaluation.get('p90_height'),
         })
-        if target in self.state['pending']:
-            self.state['pending'].remove(target)
-        self.append_result(f'{summary} → **PROMOTE**')
-        if not self.state['pending']:
+        if target >= FINAL_TARGET:
+            self.append_result(f'{summary} → **PROMOTE** (final rung)')
             self.confirm_and_finish(checkpoint)
             return
+        # Supersede any rung queued by an earlier refine: the freshly measured
+        # per-layer survival is the better estimate.
+        self.state['pending'] = [next_target(target, success)]
+        self.append_result(
+            f'{summary} → **PROMOTE** → next rung {self.state["pending"][0]}')
         self.save()
-        self.launch_next_pending(init_from=str(checkpoint.resolve()))
+        self.launch_next_pending(init_from=str(checkpoint))
 
     def extend(self, current, summary, reason):
         target = current['target']
@@ -300,11 +322,7 @@ class Ladder:
                       f'rung {failed_target} failed and midpoint {midpoint} too close '
                       f'to last pass {last_passed}')
             return
-        if self.state['pending'] and self.state['pending'][0] == failed_target:
-            self.state['pending'].insert(0, midpoint)
-        else:
-            self.state['pending'].insert(0, failed_target)
-            self.state['pending'].insert(0, midpoint)
+        self.state['pending'] = [midpoint]
         self.append_result(f'{summary} → **REFINE** to rung {midpoint} ({reason})')
         self.save()
         failed_checkpoint = Path(current['dir']) / 'checkpoints/latest.pt'
@@ -346,7 +364,7 @@ def bootstrap(state_dir, current_target, current_dir, current_unit, current_fram
         log(f'state exists at {state_path}, not overwriting')
         return
     state = {
-        'pending': [rung for rung in RUNGS if rung >= current_target],
+        'pending': [current_target],
         'passed': [],
         'current': {
             'target': current_target,

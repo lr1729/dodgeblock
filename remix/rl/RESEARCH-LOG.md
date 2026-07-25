@@ -282,6 +282,26 @@ the first lever, and only then will there be successful held-charge episodes
 worth amplifying. `dash_effectiveness.lift_over_baseline` is the tracked
 number.
 
+**Rung 1000 failed as predicted, and the ladder self-corrected.** Det 0.021
+(prediction: ≈0.16 — the direction was right, the magnitude optimistic),
+stochastic 0.031, **per-layer 0.858 — below rung 500's 0.927**. Per-layer hazard
+*rises* with height because difficulty tracks elapsed time, so the ladder aims
+at a moving bar. Symptom of the v3 signal desert recurring: at 2% success the
+gradient vanishes and the policy drifts — median height *regressed* 440 → 360
+and climb rate 12.1 → 8.9 h/s versus the rung-500 actor it started from.
+The driver refined to 700 unattended. **Registered read: scale alone is not
+sufficient** — more frames at a rung stop helping (3M saturation) well before
+the rung is solved, and the per-layer bar rises faster than frames close it.
+
+**Adaptive rung sizing (replaces the tabulated ladder).** A fixed table cannot
+know the step a policy can take; per-layer survival can. After each pass the
+driver now solves for the height whose *predicted* success is AIM_SUCCESS=0.35
+given measured per-layer survival, bounded to [1.08x, 1.5x]. From the measured
+rung-500 pass the derived schedule is 500 → 550 → 800 → 1200 → 1800 → 2700 →
+4050 → 6100 → 9150 → 10000: conservative while survival is weak, accelerating
+as it compounds — nine rungs instead of a table that burned one on a x2 jump.
+A refine now replaces the queue rather than restoring the failed target.
+
 **Hardware headroom audit (2026-07-24 evening).** Half-idle VRAM is not idle
 compute: the 3090 sits at 95% utilization and the update is compute-bound
 (`collect_fraction` ≈ 0.15, i.e. 85% of wall-clock is the PPO update).
@@ -300,9 +320,16 @@ the focus-mask path is NOT the cause (forward is NaN-free compiled and eager,
 masked and unmasked), advantage normalisation is guarded (`+1e-8`), and the
 eager rung-1000 run with the *same* initialisation, target, and zero-completed-
 episode first window logs `policy_loss −0.00259`. Compile alone flips it.
-`DODGEBLOCK_COMPILE=1` is wired in `run-ppo-v4.sh` but must stay off until the
-codegen issue is found (suspects: uint16 bit-ops in the terrain decode, or the
-masked_fill backward under bf16 autocast). Larger minibatches were not pursued:
+`DODGEBLOCK_COMPILE=1` is wired in `run-ppo-v4.sh` but must stay OFF. Further
+localisation: NaN appears in the compiled *backward* (forward is clean), first
+on the forecast TokenEncoder's LayerNorm weight. One genuine latent bug was
+found and fixed on the way — `TokenEncoder` max-pooled with `-inf` and rescued
+the forward with `torch.where`, but `where` still backprops the untaken branch,
+so a token set with zero valid entries evaluated inf - inf; it now uses a finite
+`-1e4` sentinel and a count test, matching the idiom already used two lines
+below. That fix did NOT resolve the compiled NaN, so a second cause remains
+(prime suspect: uint16 bit-ops in the terrain decode under Inductor). Open
+item worth ~1.56x whenever someone wants it. Larger minibatches were not pursued:
 the GPU is already saturated at 4096, and bigger batches buy fewer optimiser
 steps per frame. The real throughput win was scheduling, not hardware — cutting
 rungs from 20M to 8M frames is ~3×, which dwarfs any of the above.

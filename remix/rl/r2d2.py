@@ -141,8 +141,10 @@ class TokenEncoder(nn.Module):
         encoded = self.token(values[..., :-1]) * mask
         token_count = mask.sum(dim=-2)
         mean = encoded.sum(dim=-2) / token_count.clamp_min(1)
-        maximum = encoded.masked_fill(~mask, -torch.inf).amax(dim=-2)
-        maximum = torch.where(torch.isfinite(maximum), maximum, torch.zeros_like(maximum))
+        # A finite sentinel, not -inf: with zero valid tokens an -inf amax makes
+        # the torch.where backward evaluate inf - inf and emit NaN gradients.
+        maximum = encoded.masked_fill(~mask, -1e4).amax(dim=-2)
+        maximum = torch.where(token_count > 0, maximum, torch.zeros_like(maximum))
         scores = torch.einsum('...nd,qd->...qn', encoded, self.queries) / math.sqrt(encoded.shape[-1])
         scores = scores.masked_fill(~mask.squeeze(-1).unsqueeze(-2), -1e4)
         attention = torch.softmax(scores, dim=-1) * mask.squeeze(-1).unsqueeze(-2)
