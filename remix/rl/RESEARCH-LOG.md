@@ -320,16 +320,27 @@ the focus-mask path is NOT the cause (forward is NaN-free compiled and eager,
 masked and unmasked), advantage normalisation is guarded (`+1e-8`), and the
 eager rung-1000 run with the *same* initialisation, target, and zero-completed-
 episode first window logs `policy_loss −0.00259`. Compile alone flips it.
-`DODGEBLOCK_COMPILE=1` is wired in `run-ppo-v4.sh` but must stay OFF. Further
-localisation: NaN appears in the compiled *backward* (forward is clean), first
-on the forecast TokenEncoder's LayerNorm weight. One genuine latent bug was
-found and fixed on the way — `TokenEncoder` max-pooled with `-inf` and rescued
-the forward with `torch.where`, but `where` still backprops the untaken branch,
-so a token set with zero valid entries evaluated inf - inf; it now uses a finite
-`-1e4` sentinel and a count test, matching the idiom already used two lines
-below. That fix did NOT resolve the compiled NaN, so a second cause remains
-(prime suspect: uint16 bit-ops in the terrain decode under Inductor). Open
-item worth ~1.56x whenever someone wants it. Larger minibatches were not pursued:
+**Root cause found and fixed (2026-07-24 night).** Bisection: every submodule
+compiles cleanly on its own, so the fault only appears in the whole-graph
+compile; NaN is confined to the six `forecasts.token` parameters while the
+identically-typed `falling.token` is clean; empty token sets are NOT the
+trigger. The discriminator was precision — compiled+bf16 breaks, compiled+fp32
+is clean, and compiled+bf16 with *only the forecast encoder* in fp32 is clean.
+Diagnosis: eager `LayerNorm` upcasts its reduction to fp32 internally; the
+fused bf16 kernel Inductor generates for this small token dimension does not,
+and the resulting instability surfaces as NaN gradients in the backward.
+Fix: `TokenEncoder.forward` runs the set encoder in fp32 (`r2d2.py`), which
+costs ~0.1% of model FLOPs and makes compiled and eager numerics agree.
+Measured after the fix, batch 4096: eager 752 ms/step vs compiled 387 ms/step —
+**1.94x** — clean over 20 optimiser steps, peak VRAM 11.3 -> 4.8 GiB.
+Two false leads are recorded because they cost time: a `-inf` max-pool in the
+same module was a genuine latent backward hazard (now a finite `-1e4` sentinel)
+but not this bug, and an early NaN probe sampled *masked* actions, making
+`log_prob` hit the `-1e9` fill and producing meaningless losses in both arms —
+synthetic probes must sample from the policy's own distribution.
+Per-submodule compilation was also measured and rejected: correct but *slower*
+than eager (4.9k vs 7.7k samples/s), because graph breaks cost more than the
+remaining fusion saves. Larger minibatches were not pursued:
 the GPU is already saturated at 4096, and bigger batches buy fewer optimiser
 steps per frame. The real throughput win was scheduling, not hardware — cutting
 rungs from 20M to 8M frames is ~3×, which dwarfs any of the above.
