@@ -521,6 +521,54 @@ crisis accuracy but not det success — meaning the policy can be taught to
 escape crises it is already in, while still walking into them. That outcome
 sends the work to positional/avoidance signal instead of rescue.
 
+### Escalator (i) first result, and what the demonstrations actually do (2026-07-25)
+
+**Prediction 2 FALSIFIED at demo_coef 0.3 -> 0.05.** Against the matched control
+(rung 600 from the rung-700-x13 actor, 8M frames, det 0.344), the treatment
+collapsed: at 1.7M frames control succ 0.234 / median 400 vs treatment 0.002 /
+120; at 2.5M control 0.246 / 400 vs treatment 0.000 / 80. Imitation accuracy
+climbed to 0.83 the whole time — the policy fit the crisis labels while its
+ordinary play fell apart. This is the v5b failure reproduced: an auxiliary loss
+of comparable gradient scale on an exclusively-crisis state distribution drags
+global behaviour toward escape actions. Run stopped at 2.4M. A retry an order
+of magnitude weaker is the obvious next setting, but the coefficient is now
+known to be the fragile axis.
+*Process note: an earlier read of this run as "not a collapse" was wrong — it
+compared against rung-600-x15, which has a different initialisation. Only the
+matched control is admissible.*
+
+**Demonstration audit — the contrast that matters.** Same tooling
+(`audit-trace.mjs`) run on the seed-7 go-explore demonstration (10,000 height,
+22,589 frames, replay verified by finalHash):
+
+| metric | our rung-600 policy | 10k demonstration |
+| --- | --- | --- |
+| climb rate | 12.6 h/s | **26.6 h/s** |
+| charges spent | 15 of ~15.7 | 85 of ~86.3 |
+| **frames a charge is held before spending** | **7.5** | **69.3** |
+| fraction of frames holding a charge | 0.023 | **0.261** |
+| **blocks shattered by dash** | **2** | **31** |
+| action mix | down-family 0.43 | up-family **0.72** |
+
+Three corrections follow:
+1. **The `dash_effectiveness.lift_over_baseline` metric does not discriminate.**
+   The demonstration scores -6.9 and reached 10k; our policy scores -8.6. Height
+   gained after a dash is the wrong measure because dashes are spent on
+   shattering and defence, not climbing. Earlier text calling the policy's
+   dashes "worthless" over-read this number. The discriminating statistics are
+   charge-holding time (9x), charge availability (11x) and shatters (15x).
+2. **The user's stated strategy is what the successful demonstrations do.**
+   31 shatters means dash-into-blocks is a core part of a 10k run — breaking
+   structure, exactly the "break towers to make shelter" play described. Our
+   policy does essentially none of it.
+3. **The v4 fast-fall pathology persists in milder form**: the policy spends 43%
+   of frames on down-family actions while the demonstration spends 72% on
+   up-family ones.
+
+This also explains why rescue distillation cannot reach the Focus problem: it
+labels states that already have zero charges. Charge banking is a *policy-wide*
+habit, not a crisis decision, and no crisis-state label can teach it.
+
 ## Falsified hypotheses
 
 1. Expected-height optimization converges to reliable completion (v1).
