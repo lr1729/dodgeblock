@@ -437,6 +437,54 @@ The check caught a real contract violation — the bug was mine, the guard
 earned its keep. Extension relaunched 09:56 as `rung-500-x3`; post-extend
 gate: promote at det ≥ 0.35, else refine to ~300.
 
+### Escalator (i) — on-policy critical-state rescue distillation (registered 2026-07-24 23:30, before any result)
+
+**Trigger fired.** Per-layer survival stalled across consecutive attempts at two
+targets: 500 went 0.838 -> 0.890 -> 0.928 -> 0.927 (hazard -34%, -36%, then 0%),
+and 700 went 0.892 -> 0.914 over a full extension. Requirement rises faster than
+achievement: 0.946 needed at 500, 0.961 at 700, 0.973 at 1000, 0.9972 at 10k
+against a measured asymptote near 0.92.
+
+**Why sparse reward cannot close this.** At 10k one layer of hazard is worth
+dP ~ 0.003 while the return is Bernoulli with sigma ~ 0.5 — an SNR of 0.006 per
+sample, so resolving a single action distinction needs order 250,000 samples.
+The simulator answers the same question at the same state in ~0.5 s of CPU.
+That ratio is the entire argument for injecting search labels, and it explains
+why the policy learns short-credit-path skills (dodging, which kills in under a
+second) but not long-credit-path ones (banking a Focus charge for a crisis,
+positional discipline).
+
+**Design.** Between rungs: roll out the CURRENT policy, capture deaths with
+rewind snapshots, run the rescue search at those states only, and distil the
+escapes as an auxiliary cross-entropy loss alongside PPO (the existing
+`--demo-dataset` path, whose shard format already carries a soft target over
+all 18 actions). Every difference from the three v5b failures is deliberate and
+measured: on-policy states instead of stale corrections (which were 85%
+repeat-biased), critical states instead of fixed cadence (whose labels were
+~ln 3, uniform), the direct head instead of the sticky head (the interface
+defect), auxiliary loss on top of PPO instead of standalone BC, and a large
+refreshed corpus instead of 1,536 states.
+
+**Registered A/B.** Control = rung 600 from the rung-700-x13 actor, no
+distillation (running from 23:14). Treatment = same target, same
+initialisation, same frame budget, plus the rescue corpus. One variable.
+
+**Registered predictions, written before the corpus exists:**
+1. Rescue search finds an escape at t-30 for >= 60% of sampled deaths (the v4
+   oracle measured ~1.0 on its sample; a lower on-policy rate is expected).
+2. Treatment beats control on det success at rung 600 by >= 0.08 absolute,
+   equivalently per-layer +0.02 (hazard -20%). Below that = falsified.
+3. A majority of found escapes use Focus, given the policy currently spends
+   charges within 7.5 frames of earning them and dies at zero.
+4. Risk to watch: corpus overfitting (v5b overfit 1,536 states) and the
+   auxiliary loss fighting PPO. Mitigations: >= 10k labelled states, small
+   demo coefficient, per-rung refresh.
+
+**What would falsify the whole escalator:** distillation lifts held-out
+crisis accuracy but not det success — meaning the policy can be taught to
+escape crises it is already in, while still walking into them. That outcome
+sends the work to positional/avoidance signal instead of rescue.
+
 ## Falsified hypotheses
 
 1. Expected-height optimization converges to reliable completion (v1).
