@@ -340,10 +340,46 @@ but not this bug, and an early NaN probe sampled *masked* actions, making
 synthetic probes must sample from the policy's own distribution.
 Per-submodule compilation was also measured and rejected: correct but *slower*
 than eager (4.9k vs 7.7k samples/s), because graph breaks cost more than the
-remaining fusion saves. Larger minibatches were not pursued:
+remaining fusion saves. **Enabled on the ladder 2026-07-24 22:49** after an end-to-end smoke run
+(1.5M frames, compiled) came back with finite losses, EV 0.49 -> 0.82, median
+0 -> 400, and a checkpoint the gate evaluator loads normally (state_dict keys
+survive because `nn.Module.compile()` is used, not the wrapping form).
+**Measured on the live ladder: 6190 sps compiled vs 4215 sps eager — 1.47x
+end-to-end.** `collect_fraction` stays ~0.14, so collection is not yet the
+bottleneck and worker count was left at 8; halving it would buy only ~1.08x.
+
+Larger minibatches were not pursued:
 the GPU is already saturated at 4096, and bigger batches buy fewer optimiser
 steps per frame. The real throughput win was scheduling, not hardware — cutting
 rungs from 20M to 8M frames is ~3×, which dwarfs any of the above.
+
+**Dead-code cleanup, 2026-07-24 (audited before deleting).** Removed the v1
+trainer and its whole v1 observation stack (`train.py`, `env.mjs`,
+`env-server.mjs`), the R2D2 trainer (`train_v2.py`), the v5 behaviour-cloning
+trainer (`train_bc_v5.py`), five launcher scripts, four unit files pointing at
+a deploy path that no longer exists, and a dead helper duplicated in two
+modules — 1,566 lines. Everything removed was verified to have no importer on
+the live path first.
+
+Deliberately kept: `go-explore.mjs` and its runner (they produced the only 10k
+existence proofs the project owns), `rescue-oracle.mjs` (reachable from the
+live evaluator's `--death-case-dir`), `counterfactual-teacher.mjs` (registered
+escalator (i)), and the trace tooling (`record_trace.py`, `render_trace.mjs`,
+`audit-trace.mjs`).
+
+Deferred deliberately, because it is risky while a ladder is in flight: the
+`ppo_v2.py` de-branching (sticky head, demo/imitation path, trajectory bank,
+held-out cell eval), collapsing `cell_bank.py` — which is *live-degenerate*,
+not dead, since `CellBankCoordinator` is constructed unconditionally and
+`FRESH_CELL_ID` classifies every episode — and moving `TokenEncoder`,
+`ResidualBlock`, `OBSERVATION_KEYS` and `interquartile_mean` out of `r2d2.py`
+(~480 of its 565 lines are dead, but those four symbols are on the live path,
+including the gate evaluator's import chain). The hazard is `training_contract()`:
+it is compared by exact dict equality on `--resume`, which is precisely the
+driver's crash-retry path, and it still contains four inert `cell_*` keys.
+Removing them invalidates every checkpoint on disk for resume, and
+`TRAINING_CONTRACT_VERSION` is not a migration mechanism — it is just another
+compared key. Do this at a ladder boundary, keeping the contract byte-identical.
 
 **Registered next experiment (one flag, no code):** `--gamma` per world frame
 is already plumbed; γ = 1 gives the objective *zero* time preference even
