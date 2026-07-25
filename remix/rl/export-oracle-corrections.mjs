@@ -188,6 +188,15 @@ for (const filename of inputFiles(inputs)) {
 if (!records.length) throw new Error('oracle inputs contain no robust corrections');
 
 const frames = records.reduce((total, record) => total + record.actions.length, 0);
+const ARRAY_STRIDES = {
+  terrain: TERRAIN_ROWS * TERRAIN_COLS,
+  skyline: SKYLINE_SIZE,
+  falling: FALLING_COUNT * FALLING_FEATURES,
+  forecasts: FORECAST_COUNT * FORECAST_FEATURES,
+  state: STATE_SIZE,
+  actions: 1,
+  targets: 18,
+};
 const arrays = {
   terrain: new Uint16Array(frames * TERRAIN_ROWS * TERRAIN_COLS),
   skyline: new Uint8Array(frames * SKYLINE_SIZE),
@@ -199,8 +208,14 @@ const arrays = {
 };
 const observation = createObservation();
 let frame = 0;
+let skipped = 0;
 for (const record of records) {
+  // Re-verify each escape as it is encoded. A record that dies inside the
+  // exported prefix is dropped, not fatal: aborting the whole corpus for one
+  // bad rescue would make large captures impossible to export.
+  const recordStart = frame;
   let previousAction = record.previousAction;
+  let died = false;
   for (let index = 0; index < record.actions.length; index++) {
     const proposedAction = record.actions[index];
     const action = canonicalAction(record.sim, proposedAction, previousAction);
@@ -210,11 +225,21 @@ for (const record of records) {
     if (record.targets) arrays.targets.set(record.targets[index], frame * 18);
     record.sim.step(heldActionInput(action, previousAction));
     previousAction = action;
-    if (record.sim.dead) {
-      throw new Error(`robust correction died in original future: ${record.filename}`);
-    }
     frame++;
+    if (record.sim.dead) {
+      died = true;
+      break;
+    }
   }
+  if (died) {
+    frame = recordStart;
+    skipped++;
+  }
+}
+if (!frame) throw new Error('every exported correction failed re-verification');
+const exportedFrames = frame;
+for (const [key, stride] of Object.entries(ARRAY_STRIDES)) {
+  if (arrays[key]) arrays[key] = arrays[key].subarray(0, exportedFrames * stride);
 }
 
 const shardDir = path.join(outputDir, `seed-${shardSeed}`);
@@ -233,16 +258,18 @@ if (arrays.targets) {
     arrays.targets,
   );
 }
+const skippedRecords = skipped;
 const sourceDigest = sha256(Buffer.from(sourceHashes.sort().join('\n')));
 const manifest = {
   version: 1,
   seed: shardSeed,
-  frames,
+  frames: exportedFrames,
   targetHeight: 10_000,
   source: softTargets
     ? 'on-policy-soft-oracle-v5'
     : 'on-policy-robust-oracle-v5',
   correctionCases: records.length,
+  skippedRecords,
   prefixFrames,
   softTargets,
   temperature: softTargets ? temperature : undefined,
@@ -269,6 +296,6 @@ process.stdout.write(`${JSON.stringify({
   event: 'exported',
   shardSeed,
   cases: records.length,
-  frames,
+  frames: exportedFrames,
   output: shardDir,
 })}\n`);

@@ -44,6 +44,18 @@ if [[ "${DODGEBLOCK_COMPILE:-0}" == "1" ]]; then
   args+=(--compile)
 fi
 
+# Rescue distillation: an auxiliary cross-entropy loss on verified escapes
+# searched from the previous rung's own deaths.
+if [[ -n "${DODGEBLOCK_DEMO_DATASET:-}" ]]; then
+  args+=(
+    --demo-dataset "$DODGEBLOCK_DEMO_DATASET"
+    --demo-seeds "${DODGEBLOCK_DEMO_SEEDS:-1001}"
+    --demo-minibatch "${DODGEBLOCK_DEMO_MINIBATCH:-1024}"
+    --demo-coef-start "${DODGEBLOCK_DEMO_COEF_START:-0.5}"
+    --demo-coef-end "${DODGEBLOCK_DEMO_COEF_END:-0.1}"
+  )
+fi
+
 if [[ -n "${DODGEBLOCK_CELL_BANKS:-}" ]]; then
   IFS=':' read -r -a banks <<< "${DODGEBLOCK_CELL_BANKS}"
   for bank in "${banks[@]}"; do

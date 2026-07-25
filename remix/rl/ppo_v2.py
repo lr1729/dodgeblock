@@ -837,6 +837,7 @@ def main():
             clip_fracs = []
             grad_norms = []
             imitation_losses = []
+            imitation_accuracies = []
             agent.train()
             for _epoch in range(args.epochs):
                 np.random.shuffle(indices)
@@ -877,16 +878,22 @@ def main():
                         )
                         imitation_loss = None
                         if demo_dataset and demo_coef:
+                            # Rescue shards are a concatenation of independent
+                            # escape prefixes, so the trajectory-order sampler
+                            # (opening / initial / switch pools) is meaningless
+                            # here and would aim ~30% of the auxiliary gradient
+                            # at whichever rescues happened to be exported first.
                             demo_batch = demo_dataset.sample(
                                 args.demo_minibatch,
                                 demo_rng,
+                                decision_weighted=False,
                             )
                             demo_observation, demo_actions, demo_targets = tensor_demo_batch(
                                 demo_batch,
                                 device,
                             )
                             demo_logits, _demo_value = agent(demo_observation)
-                            imitation_loss, _imitation_metrics = (
+                            imitation_loss, imitation_metrics = (
                                 autoregressive_imitation_loss(
                                     demo_logits,
                                     demo_observation,
@@ -916,6 +923,9 @@ def main():
                     grad_norms.append(float(grad_norm))
                     if imitation_loss is not None:
                         imitation_losses.append(float(imitation_loss.item()))
+                        imitation_accuracies.append(
+                            float(imitation_metrics['joint_accuracy'])
+                        )
                 if args.target_kl and approx_kls and approx_kls[-1] > args.target_kl:
                     break
             update_seconds = time.perf_counter() - update_started
@@ -931,6 +941,9 @@ def main():
                 'grad_norm': np.mean(grad_norms),
                 'imitation_loss': (
                     np.mean(imitation_losses) if imitation_losses else 0.0
+                ),
+                'imitation_accuracy': (
+                    np.mean(imitation_accuracies) if imitation_accuracies else 0.0
                 ),
                 'explained_variance': explained_variance(
                     flat_values[training_index_tensor],
@@ -954,6 +967,9 @@ def main():
                     'cell_heldout': coordinator.metrics(True),
                     'policy_loss': round(float(np.mean([item['policy_loss'] for item in recent])), 5),
                     'value_loss': round(float(np.mean([item['value_loss'] for item in recent])), 5),
+                    'imitation_accuracy': round(float(np.mean([
+                        item['imitation_accuracy'] for item in recent
+                    ])), 4),
                     'imitation_loss': round(float(np.mean([
                         item['imitation_loss'] for item in recent
                     ])), 5),
