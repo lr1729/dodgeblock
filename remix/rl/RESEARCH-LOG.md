@@ -480,6 +480,42 @@ initialisation, same frame budget, plus the rescue corpus. One variable.
    auxiliary loss fighting PPO. Mitigations: >= 10k labelled states, small
    demo coefficient, per-rung refresh.
 
+**Corpus built 2026-07-24 23:51 (results against the registered predictions).**
+1,024 on-policy deaths captured from the rung-700-x13 actor (stochastic, free-run
+to death), searched at rewinds 30/60/120 with 128 trials x 3 futures — 3,072
+evaluations in 85 s on 12 cores (0.03 core-seconds per evaluation).
+
+- **Prediction 1 VALIDATED, and beaten.** Original-future rescue rate
+  0.828 / 0.838 / 0.864 at rewind 30 / 60 / 120; all-futures-robust
+  0.751 / 0.754 / 0.780, against a registered threshold of >= 0.60. Rescue rate
+  *rises* with rewind depth, so intervention up to 2 s before death is
+  learnable, not only last-instant escape.
+- Corpus: **2,340 verified escapes -> 140,400 label rows**, 0 rejected on
+  re-verification (v5b overfit 1,536 states; this is ~90x larger).
+- **Prediction 3 FALSIFIED, informatively.** Only **0.4%** of escapes use Focus
+  (0.02% of label frames); the mix is up-left 0.22, up-right 0.20, neutral 0.10,
+  left 0.09. Cause: the search only offers focus options when a charge exists,
+  and the policy *dies at zero charges* (it spends each within ~7.5 frames of
+  earning it). **Rescue distillation therefore cannot teach the Focus economy
+  at all** — the error is ~10 s upstream of the crisis it labels. Focus needs a
+  separate mechanism; escalator (i) will teach positional escape only.
+- Process note: the treatment's early fresh-median looked like the v5b collapse
+  (40 vs an initialised ~440) but the control shows the same shape (0, 20, 120).
+  It is a censoring artifact — at low frame counts only short episodes have
+  completed, biasing the median down in both arms. Do not read fresh medians
+  before ~1M frames.
+
+Two defects the corpus exposed and fixed: the exporter aborted the whole run if
+one record failed re-verification (now skips and truncates, reporting the
+count), and the trainer sampled rescue shards with `decision_weighted=True`,
+whose opening/initial/switch pools are trajectory-order concepts meaningless
+for concatenated escape prefixes — ~30% of the auxiliary gradient was landing on
+whichever escapes were exported first.
+
+**Control measured:** rung 600 from the rung-700-x13 actor, 8M frames, no
+distillation -> det 0.344, per-layer 0.9313, climb 12.6 h/s. Treatment
+(identical init, target, and budget; demo_coef 0.3 -> 0.05) launched 23:57.
+
 **What would falsify the whole escalator:** distillation lifts held-out
 crisis accuracy but not det success — meaning the policy can be taught to
 escape crises it is already in, while still walking into them. That outcome
