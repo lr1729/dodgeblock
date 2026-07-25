@@ -3,6 +3,7 @@
 // movement, and action mix. Offline and exact — replays through the real sim.
 // usage: node rl/audit-trace.mjs trace.json
 import fs from 'node:fs';
+import zlib from 'node:zlib';
 
 import { Sim } from '../src/sim/sim.js';
 import { heldActionInput } from './env-v2.mjs';
@@ -12,10 +13,18 @@ const ACTION_NAMES = ['neutral', 'left', 'right', 'up', 'up-left', 'up-right', '
   'down-left', 'down-right', 'focus', 'focus-left', 'focus-right', 'focus-up',
   'focus-up-left', 'focus-up-right', 'focus-down', 'focus-down-left', 'focus-down-right'];
 
-const trace = JSON.parse(fs.readFileSync(process.argv[2]));
-const seed = (trace.bridge_seed + trace.env_index * 0x9e3779b9 + trace.episode * 0x85ebca6b) >>> 0;
+const traceFile = process.argv[2];
+const trace = JSON.parse(
+  traceFile.endsWith('.gz')
+    ? zlib.gunzipSync(fs.readFileSync(traceFile))
+    : fs.readFileSync(traceFile),
+);
+const seed = trace.bridge_seed === undefined
+  ? trace.seed
+  : (trace.bridge_seed + trace.env_index * 0x9e3779b9 + trace.episode * 0x85ebca6b) >>> 0;
 const actions = Buffer.from(trace.actions, 'base64');
 const sim = new Sim(seed, { rules: { autoGuard: false, checkpoints: false } });
+if (trace.initialSnapshot) sim.restore(trace.initialSnapshot);
 
 const events = {};
 for (const name of ['focusAimStart', 'focusStart', 'focusKick', 'focusBreak',
@@ -35,7 +44,7 @@ sim.events.on('focusStart', (event) => {
 });
 
 const counts = new Array(ACTION_NAMES.length).fill(0);
-let previous = 0, wasDashing = false;
+let previous = trace.initialPreviousAction ?? 0, wasDashing = false;
 let chargeFrames = 0, aimFrames = 0, dashFrames = 0, pressEdges = 0, holdFrames = 0;
 let travel = 0, lastX = null;
 
