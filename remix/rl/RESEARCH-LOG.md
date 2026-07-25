@@ -185,7 +185,7 @@ but stochastic (384 ep) ≥ 0.30 → extend (deterministic-degeneracy rescue);
 otherwise refine to the geometric-midpoint rung (rounded to 50) initialized
 from the failed actor; stop with NEEDS-ATTENTION when the midpoint lands within
 1.15× of the last passed rung. Crash without an eval event → relaunch same rung
-(auto-resume), max 2 retries. Caps: 14 launches, 26h wall. Final rung passing →
+(auto-resume), max 2 retries. Caps: 30 launches (raised from 14 on day 1 — refines consume more launches than budgeted), 26h wall. Final rung passing →
 1024-episode confirmation eval → LADDER-COMPLETE. State and morning-readable
 ledger: desktop `~/dodgeblock-ladder/{ladder-state.json,RESULTS.md,driver.log}`.
 
