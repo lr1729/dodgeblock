@@ -5,12 +5,6 @@ from torch.nn import functional as F
 from r2d2 import OBSERVATION_KEYS
 
 
-def action_components(actions):
-    focus = torch.div(actions, 9, rounding_mode='floor')
-    local = actions.remainder(9)
-    vertical = torch.div(local, 3, rounding_mode='floor')
-    horizontal = local.remainder(3)
-    return focus, vertical, horizontal
 
 
 def focus_action_mask(observation):

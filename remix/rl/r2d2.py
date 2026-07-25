@@ -137,6 +137,15 @@ class TokenEncoder(nn.Module):
         )
 
     def forward(self, values):
+        # Run the set encoder in fp32. Eager LayerNorm upcasts its reduction
+        # internally, but the fused bf16 kernel Inductor generates for this
+        # small token dimension does not, and emits NaN gradients into the
+        # token MLP under torch.compile. Costs ~0.1% of model FLOPs and makes
+        # compiled and eager numerics agree.
+        with torch.autocast(device_type=values.device.type, enabled=False):
+            return self.encode(values.float())
+
+    def encode(self, values):
         mask = values[..., -1:] > 0
         encoded = self.token(values[..., :-1]) * mask
         token_count = mask.sum(dim=-2)

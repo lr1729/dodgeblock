@@ -147,13 +147,11 @@ unavoidability. Failure to find one is inconclusive; compare rescue-rate curves
 across trial budgets and horizons rather than treating the diagnostic as a
 proof of the Hardcore ceiling.
 
-```bash
-python rl/train.py --envs 128 --total-steps 50000000
-```
-
-CPU is the default for the PPO baseline on the Beelink because it outperforms
-the unsupported Cezanne ROCm path. Its checkpoints live under
-`~/dodgeblock-rl/checkpoints`.
+The v1 trainer (`train.py`) and its v1 observation stack (`env.mjs`,
+`env-server.mjs`), the R2D2 trainer (`train_v2.py`), and the v5 behaviour-cloning
+trainer (`train_bc_v5.py`) were removed on 2026-07-24; their results are in
+[`RESEARCH-LOG.md`](./RESEARCH-LOG.md). The live path is `ladder_driver.py` →
+`run-ppo-v4.sh` → `ppo_v2.py`.
 
 ## V5 search distillation and robustification
 
