@@ -639,6 +639,69 @@ rebuild) retried at a coefficient an order of magnitude below the 0.3 that
 collapsed the policy. It addresses recovery, which is a real but smaller part
 of the gap.
 
+### v8 — search as teacher: the architecture requirement, measured (2026-07-25)
+
+Goal restated by the user: not a TAS and not mechanical perfection, but
+*emergent strategic decision making* — a Move-37-class choice that gives up
+something obvious for a non-obvious payoff, learned rather than engineered.
+A TAS is explicitly not wanted, and would be useless anyway: it conditions on
+future spawns the live policy cannot see, so its decisions are unlearnable
+(the "learning by cheating" failure mode).
+
+`rl/beam-search.mjs`: option-level beam search over the exact simulator,
+candidates scored across reseeded futures. Decisions at option granularity
+because held-out direction loss at 2-frame commitment measured ~ln(3).
+
+**Result — naive search is a worse teacher than the policy it would teach.**
+
+| searcher / policy | climb rate | note |
+| --- | --- | --- |
+| beam, greedy height, horizon 15, real future | 9.6 h/s | reached 480 in 3,000 frames |
+| beam, greedy height, horizon 45, 2 futures | 5.6 h/s | beam extinguished at 400 |
+| trained PPO policy (rung 600) | 12.6 h/s | median 480 |
+| go-explore demonstration | 26.6 h/s | search residue, wanders |
+
+Two findings, both structural:
+
+1. **A greedy searcher is myopic and loses to the policy.** Scoring by height
+   gained over an option window climbs into danger; the policy's success-trained
+   critic (EV 0.94) encodes risk the searcher has no access to. This is the
+   AlphaGo lesson in miniature: MCTS without a value network is weak. **Search
+   is only a useful teacher when guided by the learned value function** — which
+   is exactly the ingredient this project has never had. Go-explore proposed
+   options from constant weights; PPO had no search; the ExIt loop was never
+   real on either side.
+2. **Open-loop plans cannot be future-robust here.** Requiring survival across
+   reseeded spawn patterns extinguishes the beam: no fixed 45-frame action
+   sequence survives arbitrary futures. A fair plan must be a *closed-loop
+   policy*, not a sequence — so the search must evaluate candidates by handing
+   the continuation to the policy plus its value estimate, not by rolling a
+   committed sequence.
+
+**Consequent design (the real ExIt loop).** Move the search into Python so the
+network is inside the loop: restore a root snapshot into many envs, expand
+option candidates in lockstep through the existing batched bridge, evaluate the
+leaves with V(s) rather than rolling to death, keep the top-B, replan at each
+option boundary. Cost from measured primitives (~28k env-steps/s aggregate,
+value call ~5 ms): a 512-branch expansion of a 15-frame option is ~0.3 s, so a
+15,000-frame episode is ~5 minutes of search. Requires one bounded change to
+`env-server-v2.mjs` / `v2_bridge.py`: restore an arbitrary snapshot into env i
+(today only pre-supplied bank cells can be restored).
+
+**Why this is the design that could produce strategy rather than mechanics.**
+A decision is strategic exactly when its payoff lies beyond the horizon you can
+simulate cheaply — give up climbing now, sit under cover, survive the surge.
+Greedy search cannot see it; a value-guided search can, because V already
+scores "how likely am I to reach the target from here". The shelter meta is a
+Move-37-class behaviour by this definition, we have measured that the
+demonstrations do it (0.427 sheltered during surge) and the policy does not
+(0.13-0.22), and value-guided search is the only mechanism proposed so far that
+could find it *and* hand it back to the policy.
+
+**Registered before building:** if value-guided search does not beat the policy
+from matched states, ExIt has no teacher and this whole direction is dead —
+that is the first measurement to take, before any distillation is wired.
+
 ## Falsified hypotheses
 
 1. Expected-height optimization converges to reliable completion (v1).
