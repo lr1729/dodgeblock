@@ -68,7 +68,15 @@ def log(message):
 
 
 def base_frames(target):
-    return 30_000_000 if target >= 4000 else 20_000_000
+    # Measured 2026-07-24: rung success saturates by ~3M frames; the tail of a
+    # 20M rung bought only +0.02–0.07. Short rungs plus the extend path get the
+    # same competence at ~3x the rungs per hour.
+    return 12_000_000 if target >= 4000 else 8_000_000
+
+
+def per_layer_survival(success, target):
+    layers = max(1.0, target / 40.0)
+    return success ** (1.0 / layers) if success > 0 else 0.0
 
 
 def round50(value):
@@ -224,10 +232,15 @@ class Ladder:
         success = float(evaluation.get('target_success', 0.0))
         progress = parse_last_event(run_log, 'progress') or {}
         shelter = (progress.get('shelter_occupancy_by_phase') or {}).get('surge')
+        median = evaluation.get('median_height') or 0
+        length = evaluation.get('mean_length') or 0
+        climb = (median / (length / 60.0)) if length else 0.0
         summary = (
             f'rung {target}: det success={success:.3f} '
-            f'median={evaluation.get("median_height")} p90={evaluation.get("p90_height")} '
-            f'max={evaluation.get("max_height")} mean_len={evaluation.get("mean_length")} '
+            f'per_layer={per_layer_survival(success, target):.4f} '
+            f'climb={climb:.1f}h/s '
+            f'median={median} p90={evaluation.get("p90_height")} '
+            f'max={evaluation.get("max_height")} mean_len={length} '
             f'shelter_surge={shelter} frames={current["total_frames"]}'
         )
 

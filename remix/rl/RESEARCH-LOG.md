@@ -200,6 +200,66 @@ possibly via one extend; 1000 likely promotes; the first wall is expected at
 1750–2500 where shelter becomes mandatory. Escalator (i) fires iff a rung
 ≤ 2500 hits refine with shelter-in-surge still ≤ 0.2.
 
+### Re-evaluation, 2026-07-24 evening — the speed reframe
+
+A ladder-wide audit produced three findings that change the theory of what the
+policy must learn, without changing the ladder skeleton.
+
+**1. Difficulty is a function of TIME, so climbing fast IS a survival strategy.**
+`naturalSpawnRate = 1 + 4.2(1−e^(−s/75)) + 0.12√min` saturates near 5.2–5.6
+after ~4 minutes, so per-frame hazard is roughly pace-independent, and total
+exposure ≈ hazard × time-to-target. Halving climb time halves log-failure.
+Measured support:
+
+| run | climb rate | det success | shelter-in-surge |
+| --- | --- | --- | --- |
+| stage-1 (height reward) | 8.0 h/s | — | 0.15 |
+| rung-500-x3 | 8.3 h/s | 0.111 | 0.25 |
+| rung-500-x7 | 10.2 h/s | 0.224 | 0.20 |
+| rung-500-n9 | 12.0 h/s | 0.330 | 0.14 |
+| rung-500-x10 | 12.1 h/s | 0.389 | 0.19 |
+| go-explore demos (all 16 reached 10k) | **24.3 h/s** | — | ~0.20 cover |
+
+Competence rises monotonically with climb rate; shelter occupancy is flat and
+uncorrelated. The 10k existence proofs we own are **speedruns at ~24 h/s with
+~20% overhead cover**, not shelter play. The shelter meta is a human strategy
+under human reaction limits; nothing measured says it is the optimum for a
+frame-accurate agent. Consequence: **escalator (i)'s trigger is re-registered
+from "shelter-in-surge ≤ 0.2" to "per-layer survival stalls across two
+consecutive rung attempts"** — absence of sheltering is not evidence of a
+problem. Climb rate is now a tracked per-rung metric.
+
+**2. Per-layer survival is the invariant; rung success is a proxy.** With
+40 px layers, passing a rung at 50% demands: 500 → 0.927, 1000 → 0.973,
+2500 → 0.989, **10000 → 0.9972**. Measured at rung 500 across four attempts:
+0.838 → 0.890 → 0.928 → 0.927 — improving, then flat. The project needs a
+~25× reduction in per-layer hazard from here, and the fixed-height sequence is
+the honest read on whether frames alone buy it. The driver now logs
+`per_layer=` and `climb=` on every gate line. Registered prediction: at
+per-layer 0.93, rung 1000 lands ≈ 0.93^25 ≈ 0.16 → extend, then likely refine
+to ~700.
+
+**3. Rungs were 85% wasted.** Within-rung success saturates by ~3M frames;
+the remaining 17M bought +0.02–0.07 (n9 0.28@3M → 0.33@20M; 400-n8
+0.45@3M → 0.50@20M; 300-x5 0.48@3M → 0.50@20M). Base rung length cut
+20M → 8M (12M at/above 4000); the extend path still buys more frames where the
+tail actually matters. Expected ~3× rungs per hour. Registered prediction: 8M
+rungs land within ~0.05 of 20M rungs at the same target.
+
+**Focus economy — corrected reading.** The policy is not hoarding charges: it
+*burns them on arrival*. `focus_available_fraction` ≈ 0.010–0.014 with
+`press_given_available` 0.47–0.68, i.e. ~4 charges earned per episode and each
+spent within a few frames, so deaths occur at zero charges (matching v4).
+Focus is a ~3-lives-per-10-layers resource being spent at near-random times —
+the largest identified untapped hazard reduction, and a natural target for
+SIL amplification rather than shaping.
+
+**Registered next experiment (one flag, no code):** `--gamma` per world frame
+is already plumbed; γ = 1 gives the objective *zero* time preference even
+though exposure time is now the measured hazard driver. A/B a discount with
+~60–120 s half-life against γ = 1 at a fixed rung. This is a discount, not a
+shaped reward, so it stays inside the no-shaping constraint.
+
 ### Method map — upgrades not yet used (reviewed 2026-07-24)
 
 Ranked against measured constraints. None are churn-now; each has a trigger.
