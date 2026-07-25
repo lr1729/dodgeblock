@@ -200,6 +200,42 @@ possibly via one extend; 1000 likely promotes; the first wall is expected at
 1750–2500 where shelter becomes mandatory. Escalator (i) fires iff a rung
 ≤ 2500 hits refine with shelter-in-surge still ≤ 0.2.
 
+### Method map — upgrades not yet used (reviewed 2026-07-24)
+
+Ranked against measured constraints. None are churn-now; each has a trigger.
+
+- **Strict upgrade, apply at a stage boundary:** value head as classifier
+  (two-hot / HL-Gauss CE — Farebrother et al. 2024). Our values ARE success
+  probabilities and we live near 0 and 1, where MSE gradients are worst.
+- **Likely upgrade #1 — Self-Imitation Learning (Oh et al. 2018), escalator
+  (iii), FIRST response at the wall:** advantage-weighted CE replay of the
+  policy's own successful episodes. At 5–15% rung success PPO uses each rare
+  success once; SIL amplifies them — exactly the mechanism needed to grow the
+  first shelter-won successes. Own-data only (constraint-clean), ~50 lines.
+- **Likely upgrade #2 — auxiliary predictive heads (UNREAL-style):**
+  self-supervised crush-within-k / cover-within-k heads shape the trunk toward
+  danger-vs-cover geometry without touching reward. Trigger: shelter transition
+  stalls and SIL alone doesn't break it.
+- **Architectural option — goal-conditioned policy + hindsight relabeling
+  (UVFA/HER):** the continuous ladder; every death at h is success for g < h.
+  The rebuild-from-scratch design. Trigger: rung-hopping gets brittle above
+  ~2.5k. Not a bolt-on (on-policy mismatch; success-terminal episodes).
+- **Already registered:** critical-state search distillation = escalator (i).
+- Escalation order at the wall: SIL → aux heads → search labels (cheapest
+  first).
+
+Considered and rejected on our own measurements: curiosity/novelty bonuses
+(failure is strategic valuation, not coverage — shelter states are visited at
+0.14–0.36 occupancy but not preferred; procedural terrain saturates novelty);
+potential shaping on cover (injects the strategy we want emergent; v3 lesson:
+shaping = value init); learned HRL (v5b interface lessons; search-at-crises
+gets the benefit); MuZero-class per-decision search (restore 2.16 ms vs 60 Hz —
+arithmetic-dead; the sim is already the exact model); off-policy swaps/R2D2
+(sim fast, learner-bound, PPO stable); PBT (one GPU); difficulty randomization
+(the benchmark is fixed Hardcore). Observability audited: phase one-hot,
+pressure, block rate, elapsed time, Focus economy, bag remainders all in the
+state vector — shelter timing is fully observable; no obs gap.
+
 **Rung 500 result + driver incident (2026-07-24 morning).** Det eval at 20M:
 target_success 0.111, median 200, p90 520, max 640 — extend band, and the
 det-vs-stochastic median gap closed (200 ≈ parity; stage-1's argmax degeneracy
