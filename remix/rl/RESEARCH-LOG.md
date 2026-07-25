@@ -282,6 +282,31 @@ the first lever, and only then will there be successful held-charge episodes
 worth amplifying. `dash_effectiveness.lift_over_baseline` is the tracked
 number.
 
+**Hardware headroom audit (2026-07-24 evening).** Half-idle VRAM is not idle
+compute: the 3090 sits at 95% utilization and the update is compute-bound
+(`collect_fraction` ≈ 0.15, i.e. 85% of wall-clock is the PPO update).
+Micro-benchmark at the live minibatch (4096), contending with the live run:
+
+| variant | ms/step | samples/s | peak VRAM |
+| --- | --- | --- | --- |
+| eager (current) | 556.8 | 7.4k | 11.1 GiB |
+| channels_last | 539.2 | 7.6k | 11.1 GiB |
+| torch.compile | 357.0 | 11.5k | 4.7 GiB |
+
+`torch.compile` looks like a free 1.56× at half the memory — **and it is
+unusable**: a 1.5M-frame end-to-end smoke run with `--compile` produced
+`policy_loss/value_loss/kl/entropy = NaN` from the first update. Isolation:
+the focus-mask path is NOT the cause (forward is NaN-free compiled and eager,
+masked and unmasked), advantage normalisation is guarded (`+1e-8`), and the
+eager rung-1000 run with the *same* initialisation, target, and zero-completed-
+episode first window logs `policy_loss −0.00259`. Compile alone flips it.
+`DODGEBLOCK_COMPILE=1` is wired in `run-ppo-v4.sh` but must stay off until the
+codegen issue is found (suspects: uint16 bit-ops in the terrain decode, or the
+masked_fill backward under bf16 autocast). Larger minibatches were not pursued:
+the GPU is already saturated at 4096, and bigger batches buy fewer optimiser
+steps per frame. The real throughput win was scheduling, not hardware — cutting
+rungs from 20M to 8M frames is ~3×, which dwarfs any of the above.
+
 **Registered next experiment (one flag, no code):** `--gamma` per world frame
 is already plumbed; γ = 1 gives the objective *zero* time preference even
 though exposure time is now the measured hazard driver. A/B a discount with

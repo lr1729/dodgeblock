@@ -40,6 +40,10 @@ args=(
   --checkpoint-interval "${DODGEBLOCK_CHECKPOINT_INTERVAL:-5000000}"
 )
 
+if [[ "${DODGEBLOCK_COMPILE:-0}" == "1" ]]; then
+  args+=(--compile)
+fi
+
 if [[ -n "${DODGEBLOCK_CELL_BANKS:-}" ]]; then
   IFS=':' read -r -a banks <<< "${DODGEBLOCK_CELL_BANKS}"
   for bank in "${banks[@]}"; do
