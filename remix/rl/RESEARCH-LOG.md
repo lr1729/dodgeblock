@@ -569,6 +569,76 @@ This also explains why rescue distillation cannot reach the Focus problem: it
 labels states that already have zero charges. Charge banking is a *policy-wide*
 habit, not a crisis decision, and no crisis-state label can teach it.
 
+### v7 proposal — potential-based occupancy shaping (designed 2026-07-25)
+
+**The measurement that decides the design.** Replaying the seed-7 10k
+demonstration through the sim's own shelter test (a fixed, non-faulting block
+overhead overlapping the player by >= 6 px):
+
+| | our rung-600 policy | 10k demonstration |
+| --- | --- | --- |
+| sheltered, all frames | — | 0.399 |
+| **sheltered during surge** | **0.13-0.22** | **0.427** |
+| sheltered during release | — | 0.471 |
+| sheltered during calm | — | 0.340 |
+| fraction of frames holding a charge | 0.023 | 0.261 |
+| sheltered while holding a charge | — | 0.423 |
+| blocks shattered by dash | 2 | 31 |
+| up-family action share | 0.43 down-family | 0.72 |
+
+The demonstration shelters most during surge and release and least during calm —
+"hold cover through surges, climb in lulls", measured in machine-generated data.
+This supersedes the v4-era note that the demo ran at ~20% cover, which was
+measured on the final band only and is not representative.
+
+**Why this changes the design.** Every gap above is a property of *state
+occupancy*, not of the action taken in a state. That is exactly why BC on these
+demonstrations failed (v5a: their actions are search residue, state-independent
+by construction) and why crisis-state rescue labels cannot help (they label
+states that already have zero charges). Occupancy is the distillable content of
+a search trajectory; actions are not.
+
+**Design.** Keep the success-target ladder, adaptive rung sizing and compile
+exactly as they are. Add potential-based shaping F = Phi(s') - Phi(s) with
+
+    Phi(s) = a * cover(s) * risk(phase) + b * charges(s)
+
+- `cover(s)` is the existing shelter test; `risk(phase)` is taken from the
+  demonstration's own phase profile (surge/release high, calm low), not from
+  intuition.
+- `b * charges(s)` makes *spending* a charge cost something. The policy
+  currently spends for free within 7.5 frames of earning; the demonstration
+  holds ~69 frames and converts charges into 31 shatters.
+- Phi excludes absolute height and elapsed time. Rewarding height is the v1-era
+  pathology (mean objective prefers the wrong policy) and would recreate it.
+
+**Why this is not the shaping we rejected.** Potential-based shaping is
+policy-invariant (Ng, Harada & Russell 1999): with gamma = 1 it telescopes to
+Phi(end) - Phi(start), so the optimal policy is provably unchanged and the
+success objective still decides. It does not add information — it redistributes
+credit, which is precisely the measured bottleneck (dP ~ 0.003 per layer against
+sigma ~ 0.5 requires ~250k samples per action distinction; shaping shortens the
+path from "take cover now" to "survive the surge three seconds from now").
+The v3 lesson stands and is not contradicted: shaping cannot create signal where
+P(success) ~ 0. We are no longer there — rung 600 sits at 0.34.
+
+**Registered falsification (write results here):**
+1. If shelter-in-surge rises toward ~0.4 **and** per-layer survival breaks its
+   0.92 asymptote -> the shelter hypothesis and the design are both supported.
+2. If shelter-in-surge rises but per-layer survival does not -> **the shelter
+   meta itself is not what makes 10k reachable**, and the demonstration's cover
+   is incidental. That would be the single most valuable negative result
+   available to this project.
+3. If shelter-in-surge does not move, the potential is too weak or the policy
+   cannot reach cover from where it plays; escalate to a learned state-only
+   discriminator over local features (POfD / GAIfO, Kang et al. 2018;
+   Torabi et al. 2018) instead of a hand-specified Phi.
+
+**Retained as secondary:** the rescue corpus (2,340 verified escapes, 85 s to
+rebuild) retried at a coefficient an order of magnitude below the 0.3 that
+collapsed the policy. It addresses recovery, which is a real but smaller part
+of the gap.
+
 ## Falsified hypotheses
 
 1. Expected-height optimization converges to reliable completion (v1).
