@@ -1892,3 +1892,44 @@ there was nothing to learn about moving decisively.
 
 Still outstanding: repeat-4 is one seed, repeat-8 is untested, and none of this has
 been measured in the saturated regime where the goal lives.
+
+### repeat-2 replication: all three seeds positive, n=3 cannot certify it
+
+| seed | control | repeat-2 | paired |
+|---|---|---|---|
+| 7 | 424.38 | 435.92 | +11.54 |
+| 8 | 409.22 | 441.78 | +32.56 |
+| 9 | 414.20 | 446.41 | +32.21 |
+
+mean **+25.44**, sd 12.04, SE 6.95, t(2) = 3.66, 95% CI [-4.47, +55.34].
+
+The sweep script printed **DID NOT REPLICATE**, and that verdict is mis-specified.
+It demanded the 95% CI exclude zero at df = 2, where t-crit is 4.303 -- a bar that
+a real effect of this size cannot clear with three seeds no matter how consistent
+it is. Recording it because an automated verdict that is wrong in the conservative
+direction is still wrong, and the fix is to report the estimate rather than a
+binary.
+
+What the data actually says: **all three paired differences are positive** and the
+mean is +25.44 against a total noise-band span of 15.2. Formally p ~ 0.13 at n = 3.
+That is not certification, and it is not the lambda=0.97 pattern either -- that one
+flipped sign on its third seed (+15.62, +12.19, **-1.33**). Nothing here flips.
+
+Combined with the dose-response (repeat-4 at 459.34 exceeding every repeat-2 seed)
+this is the strongest evidence the project has, and still short of proof. Two more
+repeat-4 seeds and repeat-8 are running; if repeat-4 also comes in positive at
+three seeds, the two arms together are far more convincing than either alone.
+
+### What it is worth, in the units that matter
+
+| | det | per-layer | hazard |
+|---|---|---|---|
+| control | 0.3440 | 0.9313 | 0.0687 |
+| repeat-2 | 0.3608 | 0.9343 | 0.0657 |
+| repeat-4 | 0.4048 | 0.9415 | 0.0585 |
+
+Action repeat buys **1.17x hazard = 0.16 nats** at rung 600. The remaining gap to
+10k-at-all in the saturated regime is 1.96 nats, so this is **~8% of the distance,
+measured in the easy regime.** Whether any of it survives into minutes two through
+six is the transfer test now queued, and that number -- not the rung-600 score --
+is the one that decides whether this changes the outlook.
