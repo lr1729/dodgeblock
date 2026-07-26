@@ -1646,3 +1646,42 @@ the regime the goal lives in.
 Measuring the saturated regime requires *starting* there. The go-explore bank
 holds snapshots at high height, hence at late elapsed time, and the restore path
 is exact -- so the measurement is available, it simply has never been run.
+
+### lambda = 0.97 did not replicate (2026-07-26)
+
+| seed | control | lambda=0.97 | paired diff |
+|---|---|---|---|
+| 7 | 424.38 | 440.00 | +15.62 |
+| 8 | 409.22 | 421.41 | +12.19 |
+| 9 | 414.20 | **412.87** [404.67, 421.08] | **-1.33** |
+
+mean +8.83, sd 8.96, SE 5.17, t(2) = 1.71, 95% CI **[-13.44, +31.09]**. The
+interval spans zero. The prediction registered before the run -- 425 to 430 if
+the effect were real -- was wrong; the third seed came in flat.
+
+So the last live thread from the sweeps closes, and **nothing in this ledger is a
+confirmed positive.** Every intervention run against a properly measured control
+is null or negative:
+
+| direction | verdict |
+|---|---|
+| more frames | saturates by 3M |
+| behaviour cloning / distillation from search | collapse |
+| potential-based shaping | no-op by construction at gamma = 1 |
+| success-visitation bonus | negative, dose-dependent |
+| auxiliary hazard head | cancelled: the probe showed no signal to extract |
+| GAE credit horizon (lambda) | inverted U, peak did not replicate |
+| GAE truncation (rollout length) | null alone, harmful with lambda -> 1 |
+| discounted target (gamma < 1) | null across a 3.5x bracket, no speed gain |
+
+The two-seed result looked like the strongest signal the project had produced,
+and it was reported that way. It was seed noise with a consistent sign across two
+draws, which is exactly what a 15-point noise band makes likely and exactly what
+the replication gate exists to catch. Cost: one 25-minute run.
+
+The pattern across the whole ledger is now hard to miss: **every intervention has
+targeted the reward, the estimator, or the objective, and all of them were
+evaluated in the first 43 seconds of a 376-second problem.** The hazard curve says
+that regime has 4x lower hazard than the next minute and zero exposure to the one
+the goal lives in. Whatever is or is not true of these knobs at rung 600, none of
+it has been tested where it matters.
