@@ -832,6 +832,50 @@ need sharp decision boundaries).
 success/failure discriminator, clipped log-odds, refreshed per rung, no
 demonstrations and no hand-specified potential.
 
+### v7 shaping — FALSIFIED, and the reason is structural (2026-07-25 03:31)
+
+Sweep at target 600, 8M frames each, same init as the measured control
+(det 0.344, per-layer 0.9313):
+
+| arm | cover / charge | det success | per-layer | shelter-in-surge |
+| --- | --- | --- | --- | --- |
+| control | none | **0.344** | 0.9313 | ~0.14-0.19 |
+| shape-a | 0.01 / 0.005 | 0.285 | 0.9198 | 0.178 |
+| shape-b | 0.03 / 0.015 | 0.291 | 0.9210 | 0.200 |
+| shape-c | 0.10 / 0.050 | 0.322 | 0.9273 | 0.191 |
+
+Every arm is BELOW control, and — decisively — **the potential did not move the
+behaviour it was designed to move.** In the strongest arm shelter-in-surge went
+0.094 -> 0.190 -> 0.140 over training: no sustained shift, against a
+demonstration value of 0.427. This is registered falsification case 3.
+
+**Why it could never have worked, and this generalises.** With gamma = 1 the
+shaping contribution to an episode's return telescopes to
+Phi(terminal) - Phi(s_0), and terminal potential is 0 by construction, so the
+total is **-Phi(s_0): a constant**. Constants are absorbed by the advantage
+baseline. Potential-based shaping therefore *cannot* change the ranking of
+trajectories by return — it can only redistribute credit within an episode via
+bootstrapped TD/GAE, a second-order effect that an already-good critic
+(EV 0.94) largely provides anyway, and which here was swamped by added variance.
+
+**The property that made it principled is exactly what made it useless.**
+Policy invariance (Ng, Harada & Russell 1999) guarantees the optimum is
+unchanged; at gamma = 1 with zero terminal potential it also guarantees the
+*return* is unchanged up to a constant. To actually shift behaviour the bonus
+must be biased — it must change what is optimal. That is precisely what the
+literature's current answers do: SVM's clipped log-odds (arXiv:2606.23640) and
+DEMO3's bounded `beta*tanh` (arXiv:2503.01837), where the bonus is *bounded* so
+it cannot override the task reward, rather than *potential-shaped* so it cannot
+change anything.
+
+Consequence: **do not reach for potential-based shaping in an undiscounted
+success-only objective again.** The remaining live design is a bounded,
+self-generated bonus: a discriminator trained by BCE on the agent's own
+successful vs unsuccessful episodes, added as a clipped log-odds term with a
+DEMO3-style bound, refreshed per rung. No demonstrations, no hand-specified
+potential, and structurally incapable of the coefficient collapse that killed
+the rescue distillation.
+
 ## Falsified hypotheses
 
 1. Expected-height optimization converges to reliable completion (v1).
