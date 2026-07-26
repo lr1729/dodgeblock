@@ -1206,3 +1206,158 @@ per-layer is not a tuning problem; at 10k the difference between two actions is
 that. The reason to fix the critic is not that it closes the gap — it is that a
 critic which ranks states at chance cannot climb *any* part of it, and every
 method that assumed otherwise has now been measured and has failed.
+
+---
+
+## v10 — the v9 diagnosis was wrong, and the measurement that killed it (2026-07-26)
+
+Adversarial review plus one new measurement retired the plan from the previous
+section before it consumed the GPU. Recording it in full, because two of the
+errors are mine and one had been asserted in three separate documents.
+
+### 1. The reward is not terminal-only
+
+`reward-v2.mjs`, `targetReward`, contains a hard-coded height potential:
+
+```js
+const beforePotential = Math.min(1, beforeHeight / targetHeight);
+const afterPotential  = dead || success ? 0 : Math.min(1, afterHeight / targetHeight);
+return (success ? 1 : 0) + Math.pow(discount, worldScale) * afterPotential - beforePotential;
+```
+
+`critic-profile.py`, the v9 log entry, and the hazard-head comment all assert a
+terminal-only reward and derive `V(s) = P(success|s)` from it. The correct
+statement is `V(s) = P(success|s) - Phi(s)`, `Phi = height/target`.
+
+The *objective* is unharmed -- the potential telescopes and `Phi(s_0) = 0`, so the
+episode return is exactly `1[success]`. Confirmed in the logs, where
+`mean_return 0.286` equals `target_success 0.286` to three digits. But two
+downstream readings were wrong:
+
+- The pooled AUC of 0.43 has an exact mechanical explanation and needs no
+  dwell-time story: `V` is anti-monotone in height *by construction*, while
+  survivors visit high heights more. I reached the right conclusion (match on
+  height) via reasoning that was not the real cause.
+- Every place the log treats `V` as a calibrated `P(success)` is off by `Phi`.
+
+### 2. The critic is not underfit — the outcome is not predictable
+
+The v9 fix assumed AUC 0.5 was a defect. That assumes a better answer exists.
+`outcome-probe.py` tests it: freeze the trunk, capture the 384-d representation at
+each episode's first crossing of a height band, label with eventual survival,
+train a supervised probe, split by EPISODE, score held out.
+
+| height | 100 | 200 | 300 | 400 |
+|---|---|---|---|---|
+| probe AUC | 0.494 | 0.467 | 0.500 | 0.469 |
+| critic AUC | 0.535 | 0.549 | 0.549 | 0.556 |
+| test episodes | 586 | 517 | 385 | 312 |
+
+A probe trained directly on outcome labels cannot beat chance, and the critic
+narrowly *outperforms* it. **At matched height the eventual outcome is not a
+function of the state.** The critic is at or near optimal, and "a progress meter
+blind to danger" was wrong: it is a progress meter because progress is what is
+predictable.
+
+Read alongside the hazard smoke test -- the same trunk separates P(death within
+10 frames) at 0.538 -- the pair is jointly diagnostic and neither number is
+noise: **short-horizon hazard is state-determined; long-horizon success is not.**
+
+Consequence: the auxiliary hazard head cannot work through the stated mechanism.
+It would train well and change nothing, because there is no ranking for a better
+`V` to express. The queued hazard and hazard x lambda runs were cancelled.
+
+### 3. The credit horizon result is not monotone
+
+lam-97 finished after the v9 entry was written: det **0.357**, above the control's
+0.344.
+
+| lambda | 0.90 | 0.95 | 0.97 | 0.995 (control) |
+|---|---|---|---|---|
+| det success | 0.283 | 0.307 | **0.357** | 0.344 |
+
+The v9 entry called this monotone on two points plus the control. It is not. The
+supportable claim is narrower: **lambda at or below 0.95 hurts; 0.97 and 0.995
+are indistinguishable.** The "sharpening credit onto a blind critic" story
+predicted monotonicity and does not survive its own third data point.
+
+### 4. None of the A/Bs are statistically significant
+
+At n=512 and p ~ 0.34, SE(one arm) = 0.021 and SE(a difference) = 0.030, so a
+difference needs |d| > 0.058 to clear 95%, or > 0.080 with a Bonferroni
+correction over the seven arms sharing one control.
+
+| arm | shape-a | shape-b | shape-c | svm-half | svm-full | lam-90 | lam-95 | lam-97 |
+|---|---|---|---|---|---|---|---|---|
+| diff from control | +0.059 | +0.053 | +0.022 | +0.043 | +0.063 | +0.061 | +0.037 | -0.013 |
+| z | 1.99 | 1.79 | 0.74 | 1.45 | 2.12 | 2.05 | 1.25 | -0.44 |
+
+Minimum detectable difference at 80% power: **0.083**. Every effect this project
+has interpreted is smaller than what the protocol can resolve. "Falsified" was
+too strong throughout; the supportable statement is **"no intervention produced a
+detectable improvement"**, which is a weaker and different claim.
+
+Worse, all arms and the control run seed 7, so run-to-run variance of the
+*identical* configuration has never been measured. There is a hint it is large:
+rung-600-n14 and its continuation rung-600-x15 have statistically
+indistinguishable mean height (424.4 [408,441] vs 421.3 [405,436]) and report det
+success 0.344 vs 0.295 -- a 0.049 swing in the headline metric across checkpoints
+of equivalent competence.
+
+**Protocol changes:** mean height with a bootstrap CI becomes the primary metric
+(it uses every episode's full height rather than one success bit, and the two
+runs above show it is far more stable); evaluation goes to 2048 episodes; and a
+noise-floor sweep varying only the training seed now runs before any further
+interventions are interpreted.
+
+### 5. The estimator, not the reward and not the representation
+
+Measured: mean episode length **2333 frames**; GAE segment **256 steps**.
+
+For a critic that has fit the height potential -- deterministic and trivially
+learnable -- the TD residual at a non-terminal step is
+
+  delta_t = [gamma*Phi_{t+1} - Phi_t] + gamma*(c - Phi_{t+1}) - (c - Phi_t) = c*(gamma - 1) = 0 at gamma = 1
+
+so all signal sits at the terminal step. GAE restarts every 256-step segment and
+bootstraps from `V` at the boundary, so a state receives real signal only when its
+episode terminates inside its own segment: **~256/2333 = 11% of samples.** Within
+that segment, lambda=0.995 decays the terminal credit to 0.28 across 256 steps.
+
+This is arithmetic, not inference, and it is independent of whether the critic is
+underfit. It also explains what the previous five interventions have in common:
+all of them added information to the *reward*, at states where the estimator
+discards it.
+
+Queued (batch held at 131k samples and ~61 updates per arm, so rollout length is
+not confounded with update count): rollout 1024 x lambda 0.995, rollout 1024 x
+lambda 0.9995, rollout 256 x lambda 0.9995.
+
+### 6. Where this points
+
+The two live measurements now say opposite-looking things that are in fact
+consistent, and together they name the estimator:
+
+- The **state** effect is nil: at matched height nothing predicts the outcome.
+- The **action** effect is real: 72-88% of deaths had an escape 10-20 frames out.
+
+That is exactly the regime where paired action contrasts are the right estimator
+and GAE is the wrong one. `A(s,a)` can be sharp while `V(s)` is flat, and GAE
+estimates `A` through a +-1 terminal return whose noise swamps it.
+
+The asset this project has and has never used for estimation: an exact simulator
+with bitwise-verified `restore` and no reseed, so two rollouts from one snapshot
+face identical falling blocks. Under common random numbers the contrast
+`1[survive|a] - 1[survive|a']` has variance `P(discordant) - delta^2` rather than
+~0.25 -- a large reduction in samples per action distinction, and unbiased,
+because the rollouts are the agent's own policy from its own visited states.
+This is Monte-Carlo policy *evaluation*, not the search-as-teacher and
+distillation approaches that already failed (those were policy improvement and
+behaviour cloning respectively, and carried the corresponding pathologies).
+
+Its screening property also addresses the measured Q-flatness directly: where all
+branches agree, the state is not a decision point and can be dropped; where they
+disagree, it is. That is a measured crisis detector rather than a heuristic one.
+
+Not yet built. The truncation sweep and the noise floor come first, because both
+are cheap and both gate the interpretation of everything after them.
