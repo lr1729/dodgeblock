@@ -1933,3 +1933,28 @@ Action repeat buys **1.17x hazard = 0.16 nats** at rung 600. The remaining gap t
 measured in the easy regime.** Whether any of it survives into minutes two through
 six is the transfer test now queued, and that number -- not the rung-600 score --
 is the one that decides whether this changes the outlook.
+
+### Correction: the dose-response was a seed-7 artifact
+
+repeat-4 at seed 8 gives mean height **422.07** [414.08, 430.12], paired **+12.85**
+-- inside the noise band, and below repeat-2 at the same seed (441.78).
+
+| arm | seed 7 | seed 8 | seed 9 | paired mean |
+|---|---|---|---|---|
+| repeat-2 | 435.92 (+11.54) | 441.78 (+32.56) | 446.41 (+32.21) | **+25.44** |
+| repeat-4 | 459.34 (+34.96) | 422.07 (+12.85) | pending | +23.9 (n=2) |
+
+The v14 entry claimed "monotone in the dose" and called that harder to fake than a
+single high arm. **It was fitted on seed 7 alone**, where repeat-4 happened to draw
+high and repeat-2 low. At seed 8 the ordering reverses. Two arms, two seeds, and
+the ranking between them flips -- which is precisely the failure mode the noise
+floor was measured to prevent, committed one entry after measuring it.
+
+What survives is weaker and still worth something: **all five paired differences
+across both arms are positive** (+11.54, +32.56, +32.21, +34.96, +12.85), and the
+two arms have indistinguishable means. So action repeat looks real; *how much*
+repeat is better is not resolved, and nothing here supports 4 over 2.
+
+Practical consequence: repeat-8 will not settle a dose-response either at one seed,
+and the transfer test should run on repeat-2, which has three seeds behind it,
+rather than on whichever single arm scored highest.
