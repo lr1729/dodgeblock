@@ -1851,3 +1851,44 @@ The paired difference at seed 7 is +11.54.
 Registered before the result: three same-signed paired differences make this the
 first confirmed effect in the project; one flat or negative ends it, as it ended
 lambda=0.97.
+
+### Dose-response, and the first replication that held (2026-07-26)
+
+| arm | mean height | vs band 409.2-424.4 | episode (sim frames) | climb |
+|---|---|---|---|---|
+| control (3 seeds) | 409.2-424.4 | — | 2333 | 10.68 h/s |
+| repeat-2 | **435.92** [427.89, 443.97] | CI clears | 2305 | 11.35 h/s |
+| repeat-4 | **459.34** [451.48, 467.48] | CI clears by 27 | 2226 | **12.38 h/s** |
+
+repeat-4's det success is **0.4048**, the highest any policy in this project has
+recorded, against a control of 0.344.
+
+**Monotone in the dose.** Height and climb rate both rise across repeat 1 -> 2 -> 4,
+and the CI for repeat-4 sits 27 points clear of the band top. A dose-response is
+much harder to produce by seed noise than a single high arm, and it is the shape
+the mechanism predicts: the action gap grows with the control interval, so more
+repeat should mean more learnable signal per decision, until the interval gets long
+enough to cost reaction time.
+
+**And the replication is holding.** repeat-2 paired against its same-seed control:
+
+| seed | control | repeat-2 | paired |
+|---|---|---|---|
+| 7 | 424.38 | 435.92 | +11.54 |
+| 8 | 409.22 | 441.78 | **+32.56** |
+| 9 | 414.20 | pending | — |
+
+Same sign, and the second is larger than the first. This is the point at which
+lambda=0.97 also stood, so the third seed still decides it -- but lambda=0.97 never
+had a dose-response behind it, and never moved climb rate.
+
+The climb-rate result deserves its own line. Three discount strengths spanning a
+3.5x range of time preference were run specifically to buy speed and every one
+failed. Action repeat bought it as a side effect, going 10.68 -> 12.38 h/s without
+the objective ever mentioning time. That is evidence the earlier reading was right
+for the wrong reason: the policy was not slow because the objective tolerated
+slowness, it was slow because at 60 Hz no single action changes anything much, so
+there was nothing to learn about moving decisively.
+
+Still outstanding: repeat-4 is one seed, repeat-8 is untested, and none of this has
+been measured in the saturated regime where the goal lives.
