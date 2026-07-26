@@ -1778,3 +1778,40 @@ What has never been varied is the policy class itself -- 2.2M parameters,
 feedforward, one decision per world frame, an 18-way factored head. Every
 experiment in this ledger has changed what the network is *told*; none has changed
 what it *is*, or how often it acts.
+
+### The ceiling: the regime is survivable, the gap is action selection (2026-07-26)
+
+200 saturated cells (frame >= 14,400), 64 sticky-random rollouts each over a
+240-frame window -- roughly the time competent play takes to gain one layer.
+
+| | survival over a layer-time | hazard |
+|---|---|---|
+| sticky-random flailing | 0.3428 | 0.6572 |
+| **the policy** | **0.6941** | **0.3059** |
+| needed to reach 10k at all | 0.9567 | 0.0433 |
+| needed for consistent 10k | 0.9972 | 0.0028 |
+
+**94.5% of saturated cells have an escape somewhere in 64 random tries.** So the
+saturated regime is not lethal by construction -- the states are survivable and
+the deficit is action *selection*, not the environment. That rules out the one
+outcome that would have made the goal impossible, and it is the first genuinely
+good news in this ledger.
+
+The distance, in the only units that compose over 250 layers:
+
+| | hazard ratio | nats |
+|---|---|---|
+| progress so far: random -> policy | 2.1x | 0.76 |
+| remaining: policy -> 10k-at-all | 7.1x | 1.96 |
+
+**The remaining gap is 2.6x larger than every gain the project has made to date**,
+and consistent 10k is another 15x beyond that. Everything achieved so far -- the
+whole ladder, every rung, all the training -- bought 0.76 nats. Reaching 10k at
+all needs 1.96 more.
+
+That is the honest scale, and it is worth stating plainly next to the four closed
+explanation classes: reward shape, estimator, representation and exposure have all
+been eliminated, and what remains untested is the policy class itself. A 2.2M-
+parameter feedforward network taking one decision per world frame currently
+converts a 0.657 hazard into 0.306. Nothing measured says it can convert it into
+0.043; nothing measured says it cannot.
