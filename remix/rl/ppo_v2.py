@@ -13,6 +13,7 @@ from torch.nn import functional as F
 from torch.distributions import Categorical
 
 from cell_bank import CellBankCoordinator, FRESH_CELL_ID
+from svm import SuccessBonus
 from demo_dataset import DemoDataset
 from imitation_v5 import (
     autoregressive_imitation_loss,
@@ -290,6 +291,11 @@ def arguments():
     parser.add_argument('--death-penalty', type=float, default=1.0)
     parser.add_argument('--shaping-cover', type=float, default=0.0)
     parser.add_argument('--shaping-charge', type=float, default=0.0)
+    parser.add_argument('--svm-budget', type=float, default=0.0,
+                        help='total bounded bonus per episode, as a fraction of '
+                             'the task reward; 0 disables')
+    parser.add_argument('--svm-clip', type=float, default=4.0)
+    parser.add_argument('--svm-epochs', type=int, default=2)
     parser.add_argument('--alive-reward', type=float, default=0.0)
     parser.add_argument('--cell-bank', action='append', default=[])
     parser.add_argument('--cell-bank-probability', type=float, default=0.8)
@@ -706,6 +712,15 @@ def main():
 
     shaping = bool(args.shaping_cover or args.shaping_charge)
     previous_potential = np.zeros(env_count, np.float32)
+    # Success-visitation bonus: features are the state vector plus the cover
+    # flag, so nothing about the policy network or its contract changes.
+    svm = (SuccessBonus(STATE_SIZE + 1, device, args.svm_budget, args.svm_clip,
+                        epochs=args.svm_epochs)
+           if args.svm_budget > 0 else None)
+    svm_features = np.zeros((args.rollout, env_count, STATE_SIZE + 1), np.float32)
+    svm_labels = np.full((args.rollout, env_count), -1, np.int8)
+    svm_episode_start = np.zeros(env_count, np.int32)
+    recent_lengths = deque(maxlen=256)
     try:
         while frames < args.total_frames and not stop:
             collect_started = time.perf_counter()
@@ -750,6 +765,21 @@ def main():
                             packet['step_sheltered'][phase_mask]
                         ))
                 rewards = packet['rewards']
+                if svm is not None:
+                    features = np.concatenate((
+                        packet['state'],
+                        packet['step_sheltered'].astype(np.float32)[:, None],
+                    ), axis=1)
+                    svm_features[t] = features
+                    rewards = rewards + svm.bonus(features)
+                    finished_now = packet['dones'].astype(bool)
+                    if finished_now.any():
+                        outcome = packet['successes'].astype(np.int8)
+                        for env in np.flatnonzero(finished_now):
+                            svm_labels[svm_episode_start[env]:t + 1, env] = outcome[env]
+                            svm_episode_start[env] = t + 1
+                        recent_lengths.extend(
+                            packet['lengths'][finished_now].tolist())
                 if shaping:
                     # F = Phi(s') - Phi(s). Potential-based, so the optimal
                     # policy is provably unchanged; it only shortens the credit
@@ -800,6 +830,17 @@ def main():
                     )
                 frames += training_env_count
             collect_seconds = time.perf_counter() - collect_started
+            if svm is not None:
+                # Fit on the episodes that terminated inside this rollout; the
+                # bonus applied above came from the previous fit, so the
+                # discriminator never scores the batch it was just trained on.
+                labelled = svm_labels >= 0
+                if labelled.any():
+                    svm.set_episode_length(
+                        np.mean(recent_lengths) if recent_lengths else args.rollout)
+                    svm.fit(svm_features[labelled], svm_labels[labelled].astype(np.float32))
+                svm_labels.fill(-1)
+                svm_episode_start.fill(0)
 
             with torch.inference_mode(), autocast:
                 _, next_value = agent(tensor_observation(packet_observation(packet), device))
@@ -999,6 +1040,7 @@ def main():
                     'cell_heldout': coordinator.metrics(True),
                     'policy_loss': round(float(np.mean([item['policy_loss'] for item in recent])), 5),
                     'value_loss': round(float(np.mean([item['value_loss'] for item in recent])), 5),
+                    'svm': svm.metrics if svm is not None else {},
                     'imitation_accuracy': round(float(np.mean([
                         item['imitation_accuracy'] for item in recent
                     ])), 4),
