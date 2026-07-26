@@ -1085,3 +1085,124 @@ snapshot -- rsync replaces files rather than editing them, so hard links pin a
 running sweep to the code it started with at no copy cost. Checkpoint loading
 now also tolerates a missing hazard head, and says so when it resets the
 optimiser rather than restoring misaligned moments.
+
+---
+
+## STATUS — 2026-07-26
+
+### Where the project actually stands
+
+Not at the goal, and the goal is far. Per-layer survival plateaus near **0.92**;
+10k on Hardcore needs **0.9972**. Best deterministic evaluation at rung 600 is
+**0.344**, and the ladder self-terminated there rather than climbing.
+
+What changed tonight is not the number. It is that the diagnosis is now grounded
+in measurement instead of assumption, and the assumption it replaced was wrong.
+
+### The five falsified interventions
+
+| # | intervention | result vs control 0.344 | why it failed |
+|---|---|---|---|
+| 1 | more frames | rungs saturate by ~3M | not data-limited |
+| 2 | search as teacher (rescue distillation) | collapse at coef 0.3, failing at 0.05 | taught strategy; deficit is reflex |
+| 3 | potential-based shaping | 0.285 / 0.291 / 0.322 | at gamma=1 it telescopes to a constant |
+| 4 | success-visitation bonus (SVM) | 0.301 / 0.281 | self-imitation accelerates the existing mode |
+| 5 | shorter credit horizon (GAE lambda) | 0.283 (0.90) / 0.307 (0.95) | sharpens credit onto a blind critic |
+
+Interventions 1-4 all assumed the agent's deficit was **strategic** — that it did
+not know where to go or what to build. None of them tested that assumption. It
+was false.
+
+### What the two diagnostics found
+
+**The agent dies in recoverable situations.** Replaying 200 real deaths,
+snapshotting K frames before each, and searching from the exact restore point:
+
+| K frames before death | 2 | 5 | 10 | 20 | 40 | 80 | 160 |
+|---|---|---|---|---|---|---|---|
+| fraction escapable | 0.015 | 0.195 | **0.725** | **0.880** | 0.920 | 0.940 | 0.990 |
+
+88% of deaths had an escape available a third of a second earlier, found by
+*sticky-random flailing* — not an oracle. A found escape proves viability, so
+these are lower bounds. Causes: squished 148, fell 52.
+
+**The critic cannot see it coming.** Matched on height, AUC of V against eventual
+survival is **0.503 / 0.524 / 0.513 / 0.539** at heights 100/200/300/400. The
+critic learned a progress meter: it reads off how far along the episode is, and
+at equal progress cannot rank a safe position above a fatal one. Its mean is
+well calibrated to the marginal success rate while its ordering is noise.
+
+That single fact explains the whole pattern. PPO's actor learns from advantages
+built on V. A state-blind V yields state-blind advantages, which is exactly the
+measured Q-flatness (held-out direction loss ~ ln 3), and it is why every attempt
+to add information to the *reward* failed: the channel that would carry it was
+broken.
+
+### Two corrections to my own earlier conclusions
+
+1. **"The critic carries real ranking signal."** Recorded in v8 after V-guided
+   beam search beat random (median 60 vs 20), and attributed to the gamma=1
+   greedy bound. Wrong. Matched-height AUC is chance — there was no ranking
+   signal to search over, which explains the beam result more simply.
+
+2. **"The critic is anti-correlated with survival" (AUC 0.43).** My own first
+   pass, pooling every visited state. Confounded by dwell time: an episode that
+   lingers near the target contributes many high-V states and still dies.
+   Sampling one state per episode at matched progress gives chance, not
+   inversion. I caught this before acting on it.
+
+### The credit-horizon result, read honestly
+
+lambda 0.90 -> 0.283, lambda 0.95 -> 0.307, lambda 0.995 -> 0.344 (lam-97
+pending). Monotone: every shortening of the credit horizon made things worse.
+
+This is the *opposite* of what the autopsy alone predicted, and it is consistent.
+GAE interpolates between the Monte Carlo return (lambda -> 1, unbiased, smeared
+over 200 frames) and the one-step TD residual (lambda -> 0, sharp, and only as
+good as V). With V at chance, the Monte Carlo return is the only real signal in
+the estimator, and shrinking lambda discards it. Sharpening credit onto a blind
+critic sharpens noise.
+
+So the two measurements are coupled, and the ordering is forced:
+
+1. Give the trunk a danger representation.
+2. Only then shorten the credit horizon onto the causal window.
+
+### What is running
+
+An auxiliary head predicting P(death within {10, 30, 90} frames), trained by
+weighted BCE on labels the rollout already contains. It adds no reward and no
+demonstrations, so unlike interventions 2-4 it cannot bias the objective — it can
+only change what the shared trunk represents.
+
+Smoke test, 700k frames: loss 0.677 -> 0.638, separation **0.538 / 0.479 / 0.285**
+for horizons 10 / 30 / 90. Strongest at the shortest horizon, which is the
+signature the design predicted: near-term death is locally determined, long-term
+death is not. This is the well-posed problem that P(reach target) is not.
+
+Queued: hazard sweep (coef 0.25, 1.0) at control lambda, then the combination
+(hazard + lambda 0.95 / 0.90). Pre-registered mechanism tests, so a null result
+is attributable rather than ambiguous:
+
+- **matched-height AUC must rise above 0.5.** If the score improves while AUC
+  stays at chance, the stated mechanism is wrong and something else moved.
+- **viability at K=20 must fall below 0.880.** If the agent learned to react,
+  fewer of its deaths should be ones a third of a second would have saved.
+
+Prediction on record: neither half works alone — lam-90 and lam-95 are the first
+half of that confirmed — and the combination should beat *both halves*, not just
+the control. If the combination also lands below 0.344, the credit-assignment
+story is wrong and the deficit is not credit assignment at all.
+
+### Honest assessment of the 10k goal
+
+10k is reachable in principle: Go-Explore found 10k trajectories, so the game is
+survivable at saturated difficulty. The obstacle is not the environment.
+
+But the arithmetic is unchanged and unforgiving. Going from 0.92 to 0.9972
+per-layer is not a tuning problem; at 10k the difference between two actions is
+~0.003 in survival probability against a Bernoulli sigma of 0.5, which is
+~250,000 samples per action distinction. No amount of the current signal buys
+that. The reason to fix the critic is not that it closes the gap — it is that a
+critic which ranks states at chance cannot climb *any* part of it, and every
+method that assumed otherwise has now been measured and has failed.
