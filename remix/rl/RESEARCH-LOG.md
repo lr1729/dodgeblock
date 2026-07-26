@@ -1361,3 +1361,41 @@ disagree, it is. That is a measured crisis detector rather than a heuristic one.
 
 Not yet built. The truncation sweep and the noise floor come first, because both
 are cheap and both gate the interpretation of everything after them.
+
+### Feasibility, quantified from the search budget (2026-07-26)
+
+All 14 go-explore seeds reached 10k; median cost **64,237 restore-rollouts**. That
+number converts the goal into a ladder, because a causal policy gets exactly one
+attempt where the search got 64,237:
+
+| per-layer survival | P(reach 10k) | episodes per success |
+|---|---|---|
+| 0.92 (measured now) | 8.8e-10 | 1,130,000,000 |
+| 0.9400 | 1.9e-07 | 5,224,000 |
+| **0.9567** | 1.6e-05 | **64,000** |
+| 0.9700 | 4.9e-04 | 2,028 |
+| 0.9900 | 8.1e-02 | 12 |
+| 0.9972 | 4.96e-01 | 2 |
+
+A one-shot policy at **p = 0.9567** reaches 10k about as often as the entire
+64,237-iteration search does. That is a **1.8x hazard reduction** from where we
+are (0.080 -> 0.043) -- a real milestone, and far short of the 29x needed for the
+stated goal of *consistent* 10k. The project has been quoting only the 29x.
+
+### The regime we have never measured
+
+Every A/B in this ledger is at target 600 = 15 layers, which the agent covers in
+roughly the first 40 seconds. A 10k run is 22,548 frames = **6.3 minutes**, and
+difficulty saturates at ~4 minutes, so **~36% of a 10k trajectory is at saturated
+difficulty** and essentially none of rung 600 is.
+
+So the measured per-layer survival of 0.92 comes from the easy part of the curve,
+and is being extrapolated to a regime it never sampled. Per-layer survival at
+saturated difficulty is the quantity that actually decides feasibility, and it has
+never been isolated. It is measurable directly: start the policy from go-explore
+snapshots at high height and late elapsed time, and estimate the hazard there.
+
+If saturated-difficulty per-layer survival is near 0.92, the 1.8x milestone is
+plausible and the goal is a long climb. If it is materially worse -- and the
+autopsy's "squished 148 / fell 52" split at low difficulty gives no information
+about this -- then the distance is larger than any number in this log.
