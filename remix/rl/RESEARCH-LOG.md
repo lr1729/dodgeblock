@@ -1602,3 +1602,47 @@ Consequence for the stated goal: "fast, smooth, expert-looking" play is not
 reachable by reweighting the objective. Either the frontier itself has to move --
 better reactions, which is the action-conditioned credit thread -- or the target
 speed is wrong because it was read off trajectories that survived 64,000 retries.
+
+## v12 — the hazard curve, and why every A/B so far measured the wrong 40 seconds
+
+512 uncensored episodes (target set to 1,000,000 so nothing ends by succeeding).
+**512 deaths. Mean peak height 491.9. Mean episode length 43.5 seconds.**
+
+| elapsed | exposure (s) | deaths | survival/s | implied per-layer |
+|---|---|---|---|---|
+| 0-60 s | 21,059 | 410 | 0.9805 | **0.928** |
+| 60-120 s | 1,222 | 101 | 0.9173 | **0.720** |
+| 120-180 s | 16 | 1 | 0.9387 | 0.786 |
+| >=240 s (saturated) | **0** | 0 | — | **unmeasurable** |
+
+Two things fall out, and both are worse than anything previously in this log.
+
+**1. Per-layer survival is not a constant, and it collapses with elapsed time.**
+The 0.92 this project has quoted for months is the *first-minute* figure. In the
+second minute it is 0.72. Every feasibility number derived from a flat 0.92 --
+including the ladder in v11 that put "reach 10k at all" at a 1.8x hazard
+reduction -- assumed a constant that does not exist. The real requirement is to
+*sustain* 0.9567 for 376 seconds, against a policy whose hazard already
+quadruples between minute one and minute two.
+
+**2. The saturated regime cannot be measured from this policy at all.** Difficulty
+saturates at ~240 s; the mean episode is 43.5 s and the longest barely touch 180 s.
+Exposure past 240 s is exactly zero. So the quantity named in v11 as "the number
+that actually decides feasibility" is not merely unmeasured -- it is unreachable
+by rolling this policy forward, and always was.
+
+And the framing error is now quantified. Rung 600 is reached in roughly the first
+40 seconds; the mean episode is 43.5 seconds. **Every A/B in this ledger -- all
+seven interventions, the noise floor, the rollout sweep, the gamma bracket --
+optimised the first 43 seconds of a 376-second problem**, in the region where
+difficulty has barely begun to ramp. That is not a subtle sampling issue: minute
+two is a different game, with 4x the per-layer hazard, and no run in this project
+has ever trained in it.
+
+Consequence for the gamma result: the bracket asked for speed in the regime where
+speed matters least. Its null stands as measured, but it does not generalise to
+the regime the goal lives in.
+
+Measuring the saturated regime requires *starting* there. The go-explore bank
+holds snapshots at high height, hence at late elapsed time, and the restore path
+is exact -- so the measurement is available, it simply has never been run.
