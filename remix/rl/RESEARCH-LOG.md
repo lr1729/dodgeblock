@@ -1500,3 +1500,36 @@ seed-9's completion until it was caught. This exact failure -- a wait-loop pgrep
 matching its own command line -- is already recorded once in this project, and
 the chained sweeps that use a **file marker** (`grep -q 'sweep complete'`) have
 never had the problem. Chain on artifacts, not on process tables.
+
+### Truncation falsified; the lambda curve is an inverted U (2026-07-26)
+
+| arm | rollout | lambda | mean height | vs noise band 409.2-424.4 |
+|---|---|---|---|---|
+| roll-1024 | 1024 | 0.995 | 418.83 [410.55, 426.7] | inside — no effect |
+| roll-1024-l | 1024 | 0.9995 | **373.81** [365.7, 382.3] | clearly below, CI clears |
+
+Longer segments alone do nothing; longer segments plus lambda -> 1 are markedly
+worse. roll-1024-l was named in advance as the arm that actually tests the
+hypothesis, since credit cannot reach a state without both a segment that
+contains the terminal *and* a lambda that survives the decay to it. It got both
+and lost 45 points of mean height.
+
+So the "~11% of samples see a terminal" arithmetic is correct and **behaviourally
+inert**. Fixing the reach does not help, because pushing lambda toward 1 turns
+GAE into the raw Monte-Carlo return -- maximum variance, no bootstrap -- and the
+variance costs more than the reach buys.
+
+Collecting every lambda measured at rollout 256:
+
+| lambda | 0.90 | 0.95 | 0.97 | 0.995 (control) |
+|---|---|---|---|---|
+| mean height | 380.1 | 405.2 | **440.0** | 409.2-424.4 (3 seeds) |
+
+That is a smooth inverted U with a peak at 0.97, and roll-1024-l's 373.8 at
+lambda 0.9995 extends the right-hand fall. **Both neighbours of 0.97 are worse**,
+which is a much weaker coincidence than a lone high point would be — the v9
+entry called this same arm's neighbourhood "monotone worse" on two points.
+
+It is still one seed. lam-97-s8 is queued in the gamma sweep and the driver
+replicates the best arm at two further seeds, so it will have three before it is
+believed.
