@@ -36,6 +36,7 @@ args=(
   --shaping-charge "${DODGEBLOCK_SHAPING_CHARGE:-0.0}"
   --svm-budget "${DODGEBLOCK_SVM_BUDGET:-0.0}"
   --svm-clip "${DODGEBLOCK_SVM_CLIP:-4.0}"
+  --hazard-coef "${DODGEBLOCK_HAZARD_COEF:-0.0}"
   --alive-reward "${DODGEBLOCK_ALIVE_REWARD:-0.0}"
   --cell-bank-probability "${DODGEBLOCK_CELL_BANK_PROBABILITY:-0.8}"
   --cell-heldout-fraction "${DODGEBLOCK_CELL_HELDOUT_FRACTION:-0.1}"

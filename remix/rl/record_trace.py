@@ -11,6 +11,7 @@ import torch
 
 from ppo_v2 import (
     ActorCriticNetwork,
+    load_agent_state,
     AutoregressiveActionDistribution,
     STICKY_MODEL_ARCHITECTURE,
     StickyActorCriticNetwork,
@@ -30,6 +31,8 @@ def main():
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--stochastic', action='store_true')
     parser.add_argument('--out', default='trace.json')
+    parser.add_argument('--dump-all', help='also write every episode as JSONL '
+                                           '(deaths included, for autopsy)')
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -41,7 +44,7 @@ def main():
         else ActorCriticNetwork
     )
     agent = network_class().to(device)
-    agent.load_state_dict(saved['agent'])
+    load_agent_state(agent, saved['agent'])
     agent.eval()
 
     bridge = ParallelEnvBridge(
@@ -66,7 +69,7 @@ def main():
                     dtype=torch.bfloat16,
                     enabled=device.type == 'cuda',
                 ):
-                    logits, _value = agent(observation)
+                    logits, _value, _hazard = agent(observation)
                     distribution = AutoregressiveActionDistribution(logits, observation)
                     sampled = (
                         distribution.sample() if args.stochastic
@@ -113,6 +116,22 @@ def main():
             'max': float(heights.max()),
         },
     }
+    if args.dump_all:
+        with open(args.dump_all, 'w') as handle:
+            for index in range(args.episodes):
+                length = int(lengths[index])
+                actions_bytes = bytes(bytearray(
+                    int(row[index]) for row in action_rows[:length]))
+                handle.write(json.dumps({
+                    'bridge_seed': args.seed,
+                    'env_index': index,
+                    'episode': 0,
+                    'frames': length,
+                    'height': float(heights[index]),
+                    'outcome': str(outcomes[index]),
+                    'actions': base64.b64encode(actions_bytes).decode(),
+                }) + '\n')
+
     with open(args.out, 'w') as handle:
         json.dump(trace, handle)
     print(json.dumps({key: trace[key] for key in

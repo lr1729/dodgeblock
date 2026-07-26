@@ -950,3 +950,138 @@ beelink-arch: `~/dodgeblock-go-explore-bank-v4/` (16 seeds: demos + stratified
 search checkpoints), `~/dodgeblock-go-explore-bank-v5-rerun/`,
 `~/dodgeblock-v5-diagnostics/`, code copies in `~/dodgeblock-v4-explorer/` and
 `~/dodgeblock-v5-code/`.
+
+## v9 — the death autopsy inverts the diagnosis (2026-07-25)
+
+### SVM falsified, cleanly
+
+| arm | budget | det success | per-layer | discriminator |
+|---|---|---|---|---|
+| control | — | **0.344** | 0.9313 | — |
+| svm-half | 0.5 | 0.301 | 0.9230 | acc 0.757, sep 1.54 |
+| svm-full | 1.5 | 0.281 | 0.9189 | acc 0.751, sep 1.70 |
+
+The discriminator was **healthy** — accuracy 0.76, log-odds separation 1.5–1.7, far
+above the 0.11 the smoke test warned about. So the pre-registered escape hatch
+("weak features") is closed: the features separate fine and the bonus still hurt,
+monotonically in budget. Dose-response with the wrong sign is the strongest form
+this falsification could take.
+
+Why, in hindsight: positives come from the *current* policy's own successes, so
+the bonus rewards resembling what the policy already does. That is self-imitation,
+which accelerates convergence to the existing mode. The measured problem is a
+*plateau* — premature convergence is precisely the wrong medicine.
+
+Four reward-side doors are now closed: scale, search-as-teacher, potential
+shaping, self-generated visitation. Every one of them assumed the deficit was
+strategic. None of them tested that assumption.
+
+### The autopsy
+
+Replay 200 real deaths, snapshot K frames before each, and search for any action
+sequence surviving H=120 more frames. `restore` is exact, so every rollout faces
+the identical falling blocks: this asks "was there an escape from THIS situation".
+Search is 64 sticky-random rollouts — a *flailing* controller, not an oracle.
+
+| K (frames before death) | 2 | 5 | 10 | 20 | 40 | 80 | 160 |
+|---|---|---|---|---|---|---|---|
+| fraction escapable | 0.015 | 0.195 | **0.725** | **0.880** | 0.920 | 0.940 | 0.990 |
+
+Causes: squished 148, fell 52.
+
+Read it in one direction only: a found escape *proves* viability; no escape found
+does not prove doom. So these are lower bounds — the true escapability is higher.
+
+**88% of deaths were escapable with 20 frames (1/3 s) of different action, and
+random flailing finds the escape.** The agent is not walking into unavoidable
+traps. It is not failing at strategy, positioning, or exploration. It is failing
+to react inside a third of a second, in situations where noise would have lived.
+
+This inverts the premise of every intervention above, and explains all four
+failures at once: they taught strategy to an agent whose deficit is reflex.
+
+### The mismatch this exposes
+
+GAE runs at lambda = 0.995 per world frame -> effective credit horizon
+1/(1-lambda) = **200 frames**. The measured causal window of a death is
+**10-20 frames**. Credit for the fatal action is diluted across ~10-20x more
+frames than were causally involved.
+
+That is exactly the measured Q-flatness (held-out direction loss ~ ln 3): the
+signal is not absent, it is smeared. At gamma = 1 with terminal-only reward,
+V(s) = P(success from s), so delta_t = V(s_{t+1}) - V(s_t) is *precisely* the
+local change in survival probability — the sharp, correctly-attributed credit
+signal. Large lambda throws that away in favour of a high-variance Monte Carlo
+return; small lambda recovers it.
+
+lambda = 0.95 -> horizon 20 frames. lambda = 0.90 -> horizon 10 frames. Both
+match the measured window. The usual objection to small lambda — early in
+training V is garbage, so bootstrapping on it is biased — does not apply here:
+every rung initialises from a trained critic.
+
+One knob, directly implied by the first real diagnostic run on this project.
+
+### Correction: the critic does not carry the ranking signal I credited it with
+
+The v8 entry read the beam-search result (V-guided median 60 vs random 20) as
+"the critic carries real ranking signal, but short-horizon greedy over it is
+worse than the policy", and attributed the gap to the gamma = 1 greedy bound
+2*gamma*eps/(1-gamma) being infinite. The simpler explanation is now measured
+and it supersedes that one: **there is no ranking signal to search over.**
+
+Matched on height, AUC of V against eventual survival:
+
+| height | 100 | 200 | 300 | 400 |
+|---|---|---|---|---|
+| AUC | 0.503 | 0.524 | 0.513 | 0.539 |
+
+A first pass pooling every visited state gave AUC 0.43, which looks like an
+*anti*-correlated critic. That number is confounded by dwell time — an episode
+that lingers near the target contributes many high-V states and still dies — and
+sampling one state per episode at matched progress removes it. The honest
+reading is chance, not inversion.
+
+So V is a progress meter. It tracks how far along the episode is and nothing
+else; at equal height it cannot tell a safe position from a fatal one. Its mean
+is well calibrated to the marginal success rate (-0.10 mean against an implied
+-0.36) while its ordering is uninformative. This explains the Q-flatness
+directly: advantages built from a state-blind critic cannot discriminate actions.
+
+### The credit horizon alone is not the fix
+
+| arm | lambda | credit horizon | det success |
+|---|---|---|---|
+| control | 0.995 | 200 frames | **0.344** |
+| lam-90 | 0.90 | 10 frames | 0.283 |
+
+lam-95 and lam-97 pending.
+
+lambda = 0.90 matches the measured causal window and still loses. In hindsight
+the two measurements are coupled and I should have seen it before spending the
+run: GAE interpolates between the Monte Carlo return (lambda = 1, unbiased,
+smeared) and the one-step TD residual (lambda = 0, sharp, and only as good as V).
+With V at chance, shrinking lambda trades a high-variance but *correct* signal
+for a low-variance but *uninformative* one. Sharpening credit onto a blind
+critic sharpens noise.
+
+That makes the ordering non-optional:
+
+1. Give the trunk a danger representation (auxiliary hazard head).
+2. Only then shorten the credit horizon onto the causal window.
+
+Neither should work alone, and lam-90 is the first half of that prediction.
+The hazard sweep runs at the control lambda precisely so its effect is measured
+independently; its pre-registered mechanism test is the matched-height AUC, not
+the score. If AUC rises while the score does not, the indicated next run is the
+combination, not abandonment.
+
+### Process note
+
+Three arms of the lambda sweep died because a deploy landed in the live code
+directory mid-run: the change added a network head, and every arm then failed to
+load its own head-less checkpoint. lam-90's 8.1M frames of training survived and
+only its evaluation was lost. Sweeps now `cp -al` the tree and run from that
+snapshot -- rsync replaces files rather than editing them, so hard links pin a
+running sweep to the code it started with at no copy cost. Checkpoint loading
+now also tolerates a missing hazard head, and says so when it resets the
+optimiser rather than restoring misaligned moments.

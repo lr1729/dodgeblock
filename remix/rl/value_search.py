@@ -21,7 +21,8 @@ import numpy as np
 import torch
 
 from ppo_v2 import (
-    ActorCriticNetwork, AutoregressiveActionDistribution,
+    ActorCriticNetwork,
+    load_agent_state, AutoregressiveActionDistribution,
     STICKY_MODEL_ARCHITECTURE, StickyActorCriticNetwork,
     packet_observation, tensor_observation,
 )
@@ -65,7 +66,7 @@ class ValueSearch:
         with torch.inference_mode(), torch.autocast(
                 device_type=self.device.type, dtype=torch.bfloat16,
                 enabled=self.device.type == 'cuda'):
-            logits, value = self.agent(observation)
+            logits, value, _hazard = self.agent(observation)
             distribution = AutoregressiveActionDistribution(logits, observation)
             entropy = distribution.entropies()['vertical']
         return value.float().cpu().numpy(), entropy.float().cpu().numpy()
@@ -124,7 +125,7 @@ class ValueSearch:
             with torch.inference_mode(), torch.autocast(
                     device_type=self.device.type, dtype=torch.bfloat16,
                     enabled=self.device.type == 'cuda'):
-                logits, _value = self.agent(observation)
+                logits, _value, _hazard = self.agent(observation)
                 sampled = AutoregressiveActionDistribution(logits, observation).mode()
             actions = np.full(self.envs, HOLD, np.uint8)
             actions[0] = int(sampled[0].item())
@@ -234,7 +235,7 @@ def main():
                if saved.get('model_architecture') == STICKY_MODEL_ARCHITECTURE
                else ActorCriticNetwork)
     agent = network().to(device)
-    agent.load_state_dict(saved['agent'])
+    load_agent_state(agent, saved['agent'])
     agent.eval()
 
     bridge = ParallelEnvBridge(

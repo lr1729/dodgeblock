@@ -76,6 +76,63 @@ def focus_action_mask(observation):
     return torch.stack((torch.ones_like(aiming), aiming | can_press), dim=-1)
 
 
+# Credit horizons for the auxiliary hazard head. 10 and 30 straddle the
+# causal window the death autopsy measured (72% of deaths escapable 10
+# frames out, 88% at 20); 90 gives a slower-moving positional signal.
+HAZARD_HORIZONS = (10, 30, 90)
+
+
+def load_agent_state(agent, state):
+    """Load a checkpoint that may predate the auxiliary hazard head.
+
+    The head is zero-initialised and purely auxiliary, so restoring it fresh is
+    correct. Every other mismatch is still an error -- silently tolerating those
+    is how a checkpoint contract rots.
+    """
+    missing, unexpected = agent.load_state_dict(state, strict=False)
+    missing = [key for key in missing if not key.startswith('hazard.')]
+    if missing or unexpected:
+        raise RuntimeError(
+            f'checkpoint mismatch: missing={missing} unexpected={list(unexpected)}')
+
+
+def hazard_labels(deaths, dones):
+    """Per-state labels for "does this episode die within h frames".
+
+    Walks backwards accumulating the distance to the next death, resetting at
+    every episode boundary. A state whose window runs past the end of the
+    rollout without resolving is masked out rather than labelled negative --
+    otherwise the tail of every rollout would teach "safe" indiscriminately.
+    """
+    steps, envs = deaths.shape
+    far = float(steps + max(HAZARD_HORIZONS) + 1)
+    distance = torch.full((steps + 1, envs), far)
+    unresolved = torch.ones((steps + 1, envs), dtype=torch.bool)
+    for t in reversed(range(steps)):
+        died = deaths[t] > 0
+        ended = dones[t] > 0
+        distance[t] = torch.where(died, 1.0, torch.where(ended, far, 1 + distance[t + 1]))
+        unresolved[t] = ~died & ~ended & unresolved[t + 1]
+    distance, unresolved = distance[:steps], unresolved[:steps]
+
+    remaining = (steps - torch.arange(steps)).unsqueeze(-1).float()
+    targets, valid = [], []
+    for horizon in HAZARD_HORIZONS:
+        hit = distance <= horizon
+        targets.append(hit.float())
+        # Known if the death landed inside the window, or the episode ended, or
+        # the window fits entirely within what we recorded.
+        valid.append(hit | ~unresolved | (remaining >= horizon))
+    targets = torch.stack(targets, dim=-1)
+    valid = torch.stack(valid, dim=-1).float()
+    # Deaths are rare per frame; without reweighting the head converges to
+    # "always safe" and contributes no gradient to the trunk.
+    positives = (targets * valid).sum(dim=(0, 1))
+    counted = valid.sum(dim=(0, 1))
+    pos_weight = ((counted - positives) / positives.clamp(min=1)).clamp(1.0, 100.0)
+    return targets, valid, pos_weight
+
+
 class AutoregressiveActionDistribution:
     def __init__(self, logits, observation):
         self.sticky = len(logits) == 4
@@ -189,6 +246,14 @@ class ActorCriticNetwork(nn.Module):
         self.vertical_actor = nn.Linear(384, 2 * 3)
         self.horizontal_actor = nn.Linear(384, 2 * 3 * 3)
         self.critic = nn.Linear(384, 1)
+        # Auxiliary: P(death within h frames), one logit per horizon. The critic
+        # measured at chance (AUC 0.50-0.54) once matched on height -- it learned
+        # a progress meter, not a danger model, because P(reach target) is a
+        # Bernoulli label integrated over ~15 layers of noise and its danger
+        # component is a small fraction of the return variance. Near-term death
+        # is densely labelled and locally determined, so it trains, and it forces
+        # the shared trunk to encode the hazard the actor needs.
+        self.hazard = nn.Linear(384, len(HAZARD_HORIZONS))
         for actor in (self.focus_actor, self.vertical_actor, self.horizontal_actor):
             nn.init.zeros_(actor.weight)
             nn.init.zeros_(actor.bias)
@@ -236,7 +301,7 @@ class ActorCriticNetwork(nn.Module):
             self.vertical_actor(hidden).reshape(*batch_shape, 2, 3),
             self.horizontal_actor(hidden).reshape(*batch_shape, 2, 3, 3),
         )
-        return logits, self.critic(hidden).squeeze(-1)
+        return logits, self.critic(hidden).squeeze(-1), self.hazard(hidden)
 
 
 class StickyActorCriticNetwork(ActorCriticNetwork):
@@ -255,7 +320,7 @@ class StickyActorCriticNetwork(ActorCriticNetwork):
             self.vertical_actor(hidden).reshape(*batch_shape, 2, 3),
             self.horizontal_actor(hidden).reshape(*batch_shape, 2, 3, 3),
         )
-        return logits, self.critic(hidden).squeeze(-1)
+        return logits, self.critic(hidden).squeeze(-1), self.hazard(hidden)
 
 
 def arguments():
@@ -294,6 +359,9 @@ def arguments():
     parser.add_argument('--svm-budget', type=float, default=0.0,
                         help='total bounded bonus per episode, as a fraction of '
                              'the task reward; 0 disables')
+    parser.add_argument('--hazard-coef', type=float, default=0.0,
+                        help='weight of the auxiliary near-term-death head; '
+                             'shapes the shared trunk, does not change the reward')
     parser.add_argument('--svm-clip', type=float, default=4.0)
     parser.add_argument('--svm-epochs', type=int, default=2)
     parser.add_argument('--alive-reward', type=float, default=0.0)
@@ -341,6 +409,9 @@ def allocate_rollout(steps, envs, pin_memory=False):
         'logprobs': torch.empty((steps, envs), dtype=torch.float32, pin_memory=pin_memory),
         'rewards': torch.empty((steps, envs), dtype=torch.float32, pin_memory=pin_memory),
         'dones': torch.empty((steps, envs), dtype=torch.float32, pin_memory=pin_memory),
+        # Death specifically, not termination: reaching the target also ends
+        # an episode, and a success is not a hazard.
+        'deaths': torch.empty((steps, envs), dtype=torch.float32, pin_memory=pin_memory),
         'world_scales': torch.empty((steps, envs), dtype=torch.float32, pin_memory=pin_memory),
         'values': torch.empty((steps, envs), dtype=torch.float32, pin_memory=pin_memory),
     }
@@ -556,7 +627,7 @@ def main():
             map_location=device,
             weights_only=False,
         )
-        agent.load_state_dict(initialized['agent'])
+        load_agent_state(agent, initialized['agent'])
         print(json.dumps({
             'event': 'initialize',
             'checkpoint': str(Path(args.initialize_from).resolve()),
@@ -588,8 +659,18 @@ def main():
                     'variant sampling counters were reset'
                 ),
             }), flush=True)
-        agent.load_state_dict(saved['agent'])
-        optimizer.load_state_dict(saved['optimizer'])
+        load_agent_state(agent, saved['agent'])
+        if 'hazard.weight' in saved['agent']:
+            optimizer.load_state_dict(saved['optimizer'])
+        else:
+            # A checkpoint predating the hazard head has fewer parameters than
+            # the model now has, so its optimiser state cannot be mapped back.
+            # Adam moments re-warm within a few hundred steps; say so rather
+            # than restoring something misaligned.
+            print(json.dumps({
+                'event': 'optimizer_reset',
+                'reason': 'checkpoint predates the hazard head',
+            }), flush=True)
         if saved.get('cell_coordinator'):
             coordinator.load_state_dict(
                 saved['cell_coordinator'],
@@ -730,7 +811,7 @@ def main():
                 store_observation(rollout, t, observation_np)
                 observation = tensor_observation(observation_np, device)
                 with torch.inference_mode(), autocast:
-                    logits, value = agent(observation)
+                    logits, value, _hazard = agent(observation)
                     distribution = AutoregressiveActionDistribution(logits, observation)
                     action = distribution.sample()
                     if eval_indices_device.numel():
@@ -802,6 +883,9 @@ def main():
                     previous_potential = potential
                 rollout['rewards'][t].copy_(torch.from_numpy(np.asarray(rewards, np.float32)))
                 rollout['dones'][t].copy_(torch.from_numpy(packet['dones']).float())
+                rollout['deaths'][t].copy_(torch.from_numpy(
+                    packet['dones'].astype(bool) & ~packet['successes'].astype(bool)
+                ).float())
                 rollout['world_scales'][t].copy_(torch.from_numpy(packet['world_scales']))
                 done_indices = np.flatnonzero(packet['dones'])
                 for index in done_indices:
@@ -843,7 +927,7 @@ def main():
                 svm_episode_start.fill(0)
 
             with torch.inference_mode(), autocast:
-                _, next_value = agent(tensor_observation(packet_observation(packet), device))
+                _, next_value, _hazard = agent(tensor_observation(packet_observation(packet), device))
                 next_value = next_value.float().cpu()
 
             advantages = torch.zeros_like(rollout['rewards'])
@@ -860,12 +944,16 @@ def main():
                 last_gae = delta + trace_discount * nonterminal * last_gae
                 advantages[t] = last_gae
             returns = advantages + rollout['values']
+            hazard_targets, hazard_valid, hazard_pos_weight = hazard_labels(
+                rollout['deaths'], rollout['dones'])
             flat_observation = flatten_observations(rollout)
             flat_actions = rollout['actions'].flatten()
             flat_logprobs = rollout['logprobs'].flatten()
             flat_advantages = advantages.flatten()
             flat_returns = returns.flatten()
             flat_values = rollout['values'].flatten()
+            flat_hazard_targets = hazard_targets.flatten(0, 1)
+            flat_hazard_valid = hazard_valid.flatten(0, 1)
             training_indices = np.flatnonzero(
                 np.tile(training_mask, args.rollout)
             )
@@ -911,6 +999,8 @@ def main():
             grad_norms = []
             imitation_losses = []
             imitation_accuracies = []
+            hazard_losses = []
+            hazard_separations = []
             agent.train()
             for _epoch in range(args.epochs):
                 np.random.shuffle(indices)
@@ -918,7 +1008,7 @@ def main():
                     mb = torch.as_tensor(indices[start:start + args.minibatch], dtype=torch.long)
                     observation = minibatch_observation(flat_observation, mb, device)
                     with autocast:
-                        logits, new_value = agent(observation)
+                        logits, new_value, hazard_logits = agent(observation)
                         distribution = AutoregressiveActionDistribution(logits, observation)
                         new_logprob = distribution.log_prob(flat_actions[mb].to(device, non_blocking=True))
                         component_entropy = distribution.entropies()
@@ -939,6 +1029,29 @@ def main():
                             (new_value - target_return).square(),
                             (clipped_value - target_return).square(),
                         ).mean()
+                        hazard_loss = None
+                        if args.hazard_coef:
+                            mb_hazard_target = flat_hazard_targets[mb].to(device, non_blocking=True)
+                            mb_hazard_valid = flat_hazard_valid[mb].to(device, non_blocking=True)
+                            elementwise = F.binary_cross_entropy_with_logits(
+                                hazard_logits.float(),
+                                mb_hazard_target,
+                                pos_weight=hazard_pos_weight.to(device),
+                                reduction='none',
+                            )
+                            hazard_loss = (
+                                (elementwise * mb_hazard_valid).sum() /
+                                mb_hazard_valid.sum().clamp(min=1.0)
+                            )
+                            with torch.no_grad():
+                                probability = torch.sigmoid(hazard_logits.float())
+                                positive = mb_hazard_target * mb_hazard_valid
+                                negative = (1 - mb_hazard_target) * mb_hazard_valid
+                                hazard_separations.append((
+                                    (probability * positive).sum(0) / positive.sum(0).clamp(min=1) -
+                                    (probability * negative).sum(0) / negative.sum(0).clamp(min=1)
+                                ).cpu().numpy())
+                                hazard_losses.append(float(hazard_loss.item()))
                         loss = (
                             policy_loss +
                             args.value_coef * value_loss -
@@ -949,6 +1062,8 @@ def main():
                                 horizontal_entropy
                             )
                         )
+                        if hazard_loss is not None:
+                            loss = loss + args.hazard_coef * hazard_loss
                         imitation_loss = None
                         if demo_dataset and demo_coef:
                             # Rescue shards are a concatenation of independent
@@ -965,7 +1080,7 @@ def main():
                                 demo_batch,
                                 device,
                             )
-                            demo_logits, _demo_value = agent(demo_observation)
+                            demo_logits, _demo_value, _demo_hazard = agent(demo_observation)
                             imitation_loss, imitation_metrics = (
                                 autoregressive_imitation_loss(
                                     demo_logits,
@@ -1018,6 +1133,11 @@ def main():
                 'imitation_accuracy': (
                     np.mean(imitation_accuracies) if imitation_accuracies else 0.0
                 ),
+                'hazard_loss': np.mean(hazard_losses) if hazard_losses else 0.0,
+                'hazard_separation': (
+                    np.mean(hazard_separations, axis=0) if hazard_separations
+                    else np.zeros(len(HAZARD_HORIZONS))
+                ),
                 'explained_variance': explained_variance(
                     flat_values[training_index_tensor],
                     flat_returns[training_index_tensor],
@@ -1041,6 +1161,15 @@ def main():
                     'policy_loss': round(float(np.mean([item['policy_loss'] for item in recent])), 5),
                     'value_loss': round(float(np.mean([item['value_loss'] for item in recent])), 5),
                     'svm': svm.metrics if svm is not None else {},
+                    'hazard': {
+                        'loss': round(float(np.mean([
+                            item['hazard_loss'] for item in recent])), 5),
+                        'separation': {
+                            str(horizon): round(float(value), 4) for horizon, value
+                            in zip(HAZARD_HORIZONS, np.mean(
+                                [item['hazard_separation'] for item in recent], axis=0))
+                        },
+                    } if args.hazard_coef else {},
                     'imitation_accuracy': round(float(np.mean([
                         item['imitation_accuracy'] for item in recent
                     ])), 4),

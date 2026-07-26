@@ -8,6 +8,7 @@ import torch
 from evaluate_v2 import ACTION_NAMES, bootstrap_interval
 from ppo_v2 import (
     ActorCriticNetwork,
+    load_agent_state,
     AutoregressiveActionDistribution,
     STICKY_MODEL_ARCHITECTURE,
     StickyActorCriticNetwork,
@@ -56,7 +57,7 @@ def main():
         else ActorCriticNetwork
     )
     agent = network_class().to(device)
-    agent.load_state_dict(saved['agent'])
+    load_agent_state(agent, saved['agent'])
     agent.eval()
     bridge = ParallelEnvBridge(
         args.workers,
@@ -85,7 +86,7 @@ def main():
                     dtype=torch.bfloat16,
                     enabled=amp and device.type == 'cuda',
                 ):
-                    logits, _value = agent(observation)
+                    logits, _value, _hazard = agent(observation)
                     distribution = AutoregressiveActionDistribution(
                         logits,
                         observation,
