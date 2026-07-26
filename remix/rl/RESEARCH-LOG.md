@@ -1685,3 +1685,56 @@ evaluated in the first 43 seconds of a 376-second problem.** The hazard curve sa
 that regime has 4x lower hazard than the next minute and zero exposure to the one
 the goal lives in. Whatever is or is not true of these knobs at rung 600, none of
 it has been tested where it matters.
+
+## v13 — the saturated regime, measured at last (2026-07-26)
+
+The hazard curve said the policy never reaches the 240-second saturation point, so
+the deciding quantity could not be measured by rolling it forward. It can be
+measured by *starting* there: the go-explore banks hold 512 snapshots spanning
+frames 0-22,315 (median 18,531 = 309 s) and the env restores a chosen cell exactly.
+
+Policy dropped into banked states, 512 episodes per band, uncensored:
+
+| start regime | cells | deaths | layers gained | mean survival | per-layer |
+|---|---|---|---|---|---|
+| 60-240 s (ramp) | 23 | 512 | 1474 | 11.1 s | **0.6526** |
+| 240 s+ (saturated) | 485 | 512 | 1674 | 7.9 s | **0.6941** |
+
+**Saturated is not worse than ramp.** Both bands are equally off-distribution --
+both were built by search -- so the comparison between them is internally
+controlled for that confound, and it shows essentially no difficulty penalty past
+240 s. That is what a difficulty function saturating in time predicts.
+
+Now put it beside the on-distribution curve. The policy's own minute-2 states give
+0.720; search-built states at comparable times give 0.65-0.69. **Those are close.**
+So distribution shift is not what makes the banked number low -- by minute two the
+regime is simply hard, whoever built the state.
+
+### The real distance to the goal
+
+| regime | per-layer | hazard | x reduction for 10k-at-all | for consistent 10k |
+|---|---|---|---|---|
+| minute 1 | 0.928 | 0.072 | 1.7x | 26x |
+| minute 2 | 0.720 | 0.280 | **6.5x** | 100x |
+| 240 s+ (banked) | 0.694 | 0.306 | **7.1x** | 109x |
+
+v11 quoted "1.8x hazard reduction to reach 10k at all". That number is the
+minute-one figure and it is not the binding one: a 10k run is 376 seconds, so what
+must be *sustained* is the minute-two-and-beyond rate. The honest requirement is a
+**~7x hazard reduction sustained across six minutes**, and ~110x for the goal as
+originally stated. Both v11 numbers were optimistic by roughly 4x.
+
+### What this reframes
+
+The policy's hazard rises 0.928 -> 0.720 between minute one and minute two on its
+own trajectory, while banked states show no ramp-to-saturated difference. Those
+two facts together point away from the spawn-rate ramp as the driver and toward
+**the state the policy is in by minute two** -- which, since difficulty has
+saturated, is largely the pile it has built for itself.
+
+That is the first evidence in this ledger pointing at pile management rather than
+reaction speed, and it is the one hypothesis that matches what a strong human
+player reports doing: breaking towers to shape cover rather than climbing whatever
+is in front of them. It is not established -- the two measurements come from
+different state distributions and only their *difference* is controlled -- but it
+is now the best-supported live account of the plateau.
