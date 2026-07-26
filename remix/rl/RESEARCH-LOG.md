@@ -1399,3 +1399,82 @@ If saturated-difficulty per-layer survival is near 0.92, the 1.8x milestone is
 plausible and the goal is a long climb. If it is materially worse -- and the
 autopsy's "squished 148 / fell 52" split at low difficulty gives no information
 about this -- then the distance is larger than any number in this log.
+
+## v11 — the noise floor lands, and CRN is measured before it is built (2026-07-26)
+
+### The noise floor changes most of the ledger
+
+Same config, seed only: seed-7 mean height **424.38** [408.12, 441.02] (det 0.344),
+seed-8 **409.22** [401.13, 417.31] (det 0.2935). A 15-point mean-height and
+**0.051 det** swing from the seed alone.
+
+Re-judging every arm against that band (all evaluated at target 600):
+
+| arm | mean height | verdict |
+|---|---|---|
+| lam-97 | **440.0** [423.04, 455.24] | **above band** |
+| rung-600-n14 (seed 7) | 424.4 | control |
+| shape-c | 422.2 | inside |
+| seed-8 | 409.2 | control |
+| svm-half | 408.8 | inside |
+| lam-95 | 405.2 | below, CI overlaps |
+| shape-a / shape-b | 402.5 / 399.6 | below, CI overlaps |
+| svm-full | 387.3 [370.0, 404.45] | below, CI clears |
+| lam-90 | 380.1 [362.65, 396.72] | below, CI clears |
+
+**Only the two most aggressive settings clear the noise. Everything else was
+seed noise being read as an effect.** And lam-97 is the one arm this project has
+ever run that looks positive -- buried under a "monotone worse" reading that its
+own third data point had already broken. A second seed is queued.
+
+### The gamma bracket was wrong and is corrected
+
+I proposed 2s/5s/20s half-lives. The value of a 2333-frame success:
+
+| half-life | 2s | 5s | 20s | 45s | 90s |
+|---|---|---|---|---|---|
+| success worth | 0.0000 | 0.0046 | 0.2599 | 0.5494 | 0.7412 |
+
+2s and 5s collapse the return to nothing and would produce pathological urgency,
+not speed. Swept at **20/45/90s** instead. The env's potential is discounted with
+the same gamma (`ppo_v2.py` passes `discount=args.gamma`), so it still telescopes
+and the shaping stays policy-invariant; without that it would silently become a
+height reward.
+
+### CRN measured before building: 2.7x, not 50-200x
+
+`crn-probe.py` branches 32 forced first actions from one restored snapshot and
+rolls the policy 90 frames. Because `restoreSlot` does not reseed, every branch
+faces bit-identical blocks, so any outcome difference is caused by the action.
+
+| quantity | measured |
+|---|---|
+| pairwise discordance | 0.064 |
+| independent contrast variance | 0.171 |
+| **implied sample reduction** | **2.7x** |
+| decision-point rate, all states | 0.233 |
+| decision-point rate, dangerous states (survival < 0.5) | **1.00** |
+
+The projected 50-200x assumed ~1% discordance and a p near 0.5. Both are wrong
+here: discordance is 6.4%, and branch survival is 0.906 so the independent
+variance is 0.171, not ~0.5. **The paired trick buys under 3x.** Recorded before
+any of it was built, which is the point of running the probe first.
+
+The screen is the more valuable half and it is a stronger result: **in 77% of
+states all 18 actions give the identical outcome.** The true advantage there is
+zero, so PPO spends the large majority of its gradient where nothing is
+learnable -- and in exactly those states the entropy bonus is the only remaining
+force, which is a mechanism for the observed jitter rather than a metaphor for it.
+
+Caveats on the number: the 90-frame horizon may hide action effects that only
+appear later, and with 32 lanes over 18 actions 14 actions are duplicated, which
+biases discordance down by ~3% relative (0.064 -> 0.066 corrected). Neither moves
+the order of magnitude.
+
+### Consequence
+
+The direction is not "CRN gives cheap low-variance advantages" -- it gives 2.7x.
+It is "**77% of the batch is dead weight and can be identified for free**". Those
+are different projects: the first is a variance argument, the second is a
+sampling and behaviour argument, and only the second plausibly touches the
+jitter the goal is about.
