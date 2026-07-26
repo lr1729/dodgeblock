@@ -1815,3 +1815,39 @@ been eliminated, and what remains untested is the policy class itself. A 2.2M-
 parameter feedforward network taking one decision per world frame currently
 converts a 0.657 hazard into 0.306. Nothing measured says it can convert it into
 0.043; nothing measured says it cannot.
+
+## v14 — action repeat: the first arm whose CI clears the band (2026-07-26)
+
+Four explanation classes are closed and the policy class itself had never been
+varied. Its cheapest lever is how often the policy acts. Tallec et al.
+(arXiv:1901.09732) show the action gap Q(s,a) - V(s) vanishes as the control
+interval shrinks, and this project measured that fingerprint directly: held-out
+direction loss ~ ln(3), a policy whose per-frame action choice barely matters.
+Every escape the death autopsy found came from sticky-random play holding ~7.5
+frames.
+
+Implemented in the env server -- one agent step becomes one N-frame transition,
+so the rollout, GAE and loss are untouched. Agent steps held at 8M so gradient
+updates and GPU compute match the control exactly; repeat N therefore costs N x
+the sim frames, which is deliberate. The question is whether acting less often
+reaches a lower hazard, not whether it is more sample-efficient.
+
+| arm | mean height | vs band 409.2-424.4 | episode (sim frames) |
+|---|---|---|---|
+| control (3 seeds) | 409.2-424.4 | — | ~2333 |
+| **repeat-2** | **435.92** [427.89, 443.97] | **CI clears the band** | 2305 |
+
+The CI's lower bound of 427.89 sits above the band top of 424.38. **No arm in this
+ledger has done that before.** And the episode length is unchanged, so the height
+came from climbing faster (~11.4 h/s against ~10.5), not from surviving longer --
+which is notable given that three discount strengths built specifically to buy
+speed all failed to move that number.
+
+A caveat that is not optional: this is one seed, and lambda=0.97 looked exactly
+like this at two seeds before its third came in flat. Replication at seeds 8 and 9
+is queued with the prediction registered -- near 421 and 426 respectively if real.
+The paired difference at seed 7 is +11.54.
+
+Registered before the result: three same-signed paired differences make this the
+first confirmed effect in the project; one flat or negative ends it, as it ended
+lambda=0.97.

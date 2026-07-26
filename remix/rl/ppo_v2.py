@@ -359,6 +359,9 @@ def arguments():
     parser.add_argument('--svm-budget', type=float, default=0.0,
                         help='total bounded bonus per episode, as a fraction of '
                              'the task reward; 0 disables')
+    parser.add_argument('--action-repeat', type=int, default=1,
+                        help='hold each chosen action for N sim frames; one agent '
+                             'step becomes one N-frame transition')
     parser.add_argument('--hazard-coef', type=float, default=0.0,
                         help='weight of the auxiliary near-term-death head; '
                              'shapes the shared trunk, does not change the reward')
@@ -688,6 +691,7 @@ def main():
         args.seed,
         target_height=args.target_height,
         discount=args.gamma,
+        action_repeat=args.action_repeat,
         reward_mode=args.reward_mode,
         death_penalty=args.death_penalty,
         alive_reward=args.alive_reward,

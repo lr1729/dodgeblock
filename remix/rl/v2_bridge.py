@@ -27,6 +27,7 @@ class EnvWorker:
         alive_reward=0.0,
         target_height=10_000,
         discount=0.99999,
+        action_repeat=1,
         reward_mode='height',
         cell_banks=(),
         death_case_dir='',
@@ -38,6 +39,7 @@ class EnvWorker:
             '--alive-reward', str(alive_reward),
             '--target-height', str(target_height),
             '--discount', str(discount),
+            '--action-repeat', str(action_repeat),
             '--reward-mode', reward_mode,
         ]
         for cell_bank in cell_banks:
@@ -183,6 +185,7 @@ class ParallelEnvBridge:
         alive_reward=0.0,
         target_height=10_000,
         discount=0.99999,
+        action_repeat=1,
         reward_mode='height',
         cell_banks=(),
         death_case_dir='',
@@ -191,13 +194,14 @@ class ParallelEnvBridge:
             EnvWorker(
                 envs_per_worker,
                 seed + index * 0x1F123BB5,
-                death_penalty,
-                alive_reward,
-                target_height,
-                discount,
-                reward_mode,
-                cell_banks,
-                death_case_dir,
+                death_penalty=death_penalty,
+                alive_reward=alive_reward,
+                target_height=target_height,
+                discount=discount,
+                action_repeat=action_repeat,
+                reward_mode=reward_mode,
+                cell_banks=cell_banks,
+                death_case_dir=death_case_dir,
             )
             for index in range(workers)
         ]

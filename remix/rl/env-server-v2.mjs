@@ -44,6 +44,15 @@ const deathPenalty = Math.max(0, numberArg('--death-penalty', 1));
 const aliveReward = Math.max(0, numberArg('--alive-reward', 0));
 const targetHeight = Math.max(BLOCK_H, numberArg('--target-height', 10_000));
 const discount = Math.max(0, Math.min(1, numberArg('--discount', 0.99999)));
+// Hold each chosen action for N sim frames. Tallec et al. (arXiv:1901.09732)
+// show the action gap Q(s,a) - V(s) vanishes as the control interval shrinks,
+// and this project measured exactly that fingerprint: held-out direction loss
+// ~ ln(3), i.e. a policy whose action choice barely matters per frame. Repeating
+// an action multiplies its effect and makes exploration temporally correlated --
+// which is how the death autopsy's escapes were found (sticky random, mean hold
+// ~7.5 frames). Applied here rather than in the trainer so one agent step is one
+// transition and the rollout, GAE and loss are untouched.
+const actionRepeat = Math.max(1, Math.round(numberArg('--action-repeat', 1)));
 const rewardMode = stringArg('--reward-mode', 'height');
 if (!['height', 'target'].includes(rewardMode)) {
   throw new Error(`unsupported reward mode: ${rewardMode}`);
@@ -381,19 +390,31 @@ function step(actions, resetIds) {
       if (resetIds[index] >= 0) restoreSlot(entry, resetIds[index]);
       continue;
     }
-    const beforeHeight = entry.sim.height;
     const action = Math.min(ACTION_COUNT - 1, actions[index]);
     const previousAction = entry.previousAction;
     stepPhases[index] = PHASE_CODE[entry.sim.director.phase] ?? 0;
     stepSheltered[index] = isSheltered(entry.sim) ? 1 : 0;
     updateDeathCapture(entry, action);
-    const transition = entry.sim.step(heldActionInput(action, entry.previousAction));
-    const success = !entry.sim.dead && entry.sim.height >= targetHeight;
-    worldScales[index] = transition.worldScale;
-    entry.previousAction = action;
-    const reward = transitionReward(beforeHeight, entry.sim, transition.worldScale, success);
+    // The block is one transition: rewards and world time accumulate across it,
+    // and it ends early on death or success so neither is stepped past. At
+    // gamma = 1 summing undiscounted sub-step rewards is exact; below 1 it
+    // slightly under-discounts within the block, which is bounded by the block
+    // length and noted rather than corrected.
+    let reward = 0;
+    let worldScale = 0;
+    let success = false;
+    for (let repeat = 0; repeat < actionRepeat; repeat++) {
+      const beforeStep = entry.sim.height;
+      const transition = entry.sim.step(heldActionInput(action, entry.previousAction));
+      entry.previousAction = action;
+      worldScale += transition.worldScale;
+      success = !entry.sim.dead && entry.sim.height >= targetHeight;
+      reward += transitionReward(beforeStep, entry.sim, transition.worldScale, success);
+      entry.episodeLength++;
+      if (entry.sim.dead || success) break;
+    }
+    worldScales[index] = worldScale;
     entry.episodeReturn += reward;
-    entry.episodeLength++;
     rewards[index] = reward;
     if (!entry.sim.dead && !success) continue;
     if (entry.sim.dead) {
