@@ -1507,6 +1507,12 @@ never had the problem. Chain on artifacts, not on process tables.
 |---|---|---|---|---|
 | roll-1024 | 1024 | 0.995 | 418.83 [410.55, 426.7] | inside — no effect |
 | roll-1024-l | 1024 | 0.9995 | **373.81** [365.7, 382.3] | clearly below, CI clears |
+| roll-256-l | 256 | 0.9995 | **398.83** [390.86, 407.09] | below, CI clears |
+
+lambda 0.9995 loses at BOTH segment lengths (398.8 at 256, 373.8 at 1024), so the
+harm belongs to lambda and not to a lambda x rollout interaction. Extending the
+segment on top of it makes things worse still, which is the opposite of what the
+truncation account predicts.
 
 Longer segments alone do nothing; longer segments plus lambda -> 1 are markedly
 worse. roll-1024-l was named in advance as the arm that actually tests the
