@@ -1404,9 +1404,16 @@ about this -- then the distance is larger than any number in this log.
 
 ### The noise floor changes most of the ledger
 
-Same config, seed only: seed-7 mean height **424.38** [408.12, 441.02] (det 0.344),
-seed-8 **409.22** [401.13, 417.31] (det 0.2935). A 15-point mean-height and
-**0.051 det** swing from the seed alone.
+Same config, seed only:
+
+| seed | det success | mean height (95% CI) | IQM |
+|---|---|---|---|
+| 7 | 0.3440 | **424.38** [408.12, 441.02] | 458.44 |
+| 8 | 0.2935 | **409.22** [401.13, 417.31] | 433.36 |
+| 9 | 0.3110 | **414.20** [405.84, 422.36] | 442.70 |
+
+**Span 15.2 mean height and 0.051 det from the seed alone.** Every effect this
+project has interpreted is smaller than that.
 
 Re-judging every arm against that band (all evaluated at target 600):
 
@@ -1478,3 +1485,18 @@ It is "**77% of the batch is dead weight and can be identified for free**". Thos
 are different projects: the first is a variance argument, the second is a
 sampling and behaviour argument, and only the second plausibly touches the
 jitter the goal is about.
+
+### Process: self-matching pgrep idled the GPU (again)
+
+The rollout sweep was chained behind the noise floor with
+
+```
+while pgrep -f overnight-noise-floor.sh >/dev/null && pgrep -f ppo_v2 >/dev/null; do sleep 60; done
+```
+
+The waiting shell's own command line contains *both* patterns, so both pgreps
+matched the waiter itself and the loop could never exit. The GPU sat idle from
+seed-9's completion until it was caught. This exact failure -- a wait-loop pgrep
+matching its own command line -- is already recorded once in this project, and
+the chained sweeps that use a **file marker** (`grep -q 'sweep complete'`) have
+never had the problem. Chain on artifacts, not on process tables.
