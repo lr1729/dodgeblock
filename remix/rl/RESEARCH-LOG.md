@@ -1539,3 +1539,34 @@ entry called this same arm's neighbourhood "monotone worse" on two points.
 It is still one seed. lam-97-s8 is queued in the gamma sweep and the driver
 replicates the best arm at two further seeds, so it will have three before it is
 believed.
+
+### Discounting did not buy speed (2026-07-26)
+
+| arm | half-life | mean height | climb rate |
+|---|---|---|---|
+| control | — (gamma=1) | 409.2-424.4 (3 seeds) | ~10.5 h/s |
+| gamma-20s | 20 s | 409.59 [401.5, 417.36] | **10.1 h/s** |
+| 10k demos | — | — | 26.6 h/s |
+
+Mean height sits at the very bottom of the noise band, so no effect there. The
+mechanism test is climb rate, and it did not move -- if anything it fell.
+
+This matters more than the score. A 20 s half-life makes a 2,333-frame success
+worth 0.26 of an instant one, which is a large time preference, and it is the
+STRONGEST discount in the bracket: 45 s and 90 s discount less, so if the
+strongest fails to move climb rate the weaker two are very unlikely to.
+
+The hypothesis was that gamma = 1 makes the objective indifferent to speed and
+that discounting would therefore buy it. The premise is still true -- it is a
+property of the return -- but the conclusion does not follow, and the honest
+alternative is now live: **the policy may already be at its speed/safety
+optimum**, in which case the 2.5x gap to the demos is not slack.
+
+That would fit the demos being the surviving tail of ~64,000 retries. A search
+that can retry is free to be reckless; the fast paths are the ones that happened
+to live. A causal one-life policy travelling at 26.6 h/s might die almost always,
+which would make part of the observed slowness correct risk management rather
+than bumbling.
+
+One seed, two arms outstanding. Recorded now because the prediction (45 s and 90 s
+should move climb rate even less) is falsifiable before they land.
