@@ -1570,3 +1570,35 @@ than bumbling.
 
 One seed, two arms outstanding. Recorded now because the prediction (45 s and 90 s
 should move climb rate even less) is falsifiable before they land.
+
+**The prediction held. The full bracket is null.**
+
+| arm | half-life | mean height | climb rate |
+|---|---|---|---|
+| control | gamma = 1 | 409.2-424.4 (3 seeds) | ~10.5 h/s |
+| gamma-20s | 20 s | 409.59 [401.5, 417.36] | 10.1 h/s |
+| gamma-45s | 45 s | 402.40 [394.22, 410.18] | 10.3 h/s |
+| gamma-90s | 90 s | 404.88 [396.72, 412.74] | 9.8 h/s |
+| 10k demos | — | — | 26.6 h/s |
+
+Three discount strengths spanning a 3.5x range of time preference. Not one of
+them increased climb rate; all three came in slightly *slower* than gamma = 1, and
+all three land at or below the bottom of the noise band on mean height. The
+individual climb-rate gaps (9.8-10.3 against 10.5) are small enough to be noise on
+their own -- what is not noise is that there is no hint of a gain anywhere in a
+bracket built to produce one.
+
+**So gamma < 1 is falsified as a route to faster play.** The premise survives
+untouched: at gamma = 1 the return genuinely is indifferent to how long a success
+takes. Adding a time preference simply does not make the policy travel faster,
+which means slowness was not the objective's fault.
+
+That leaves the alternative stated above as the better-supported reading: the
+policy is close to its own speed/safety frontier, and the 2.5x gap to the demos is
+not slack to be recovered by asking for speed. If the agent were merely idling,
+any of three discounts should have moved it.
+
+Consequence for the stated goal: "fast, smooth, expert-looking" play is not
+reachable by reweighting the objective. Either the frontier itself has to move --
+better reactions, which is the action-conditioned credit thread -- or the target
+speed is wrong because it was read off trajectories that survived 64,000 retries.
