@@ -1738,3 +1738,43 @@ player reports doing: breaking towers to shape cover rather than climbing whatev
 is in front of them. It is not established -- the two measurements come from
 different state distributions and only their *difference* is controlled -- but it
 is now the best-supported live account of the plateau.
+
+### Training in the saturated regime does not help (2026-07-26)
+
+20M frames, 80% banked starts, target 10000, from rung-600-n14.
+
+| metric | baseline | after | |
+|---|---|---|---|
+| saturated (240s+) per-layer | 0.6941 | **0.7146** | flat |
+| ramp (60-240s) per-layer | 0.6526 | **0.5854** | worse |
+| fresh-start mean episode | 43.5 s | **20.5 s** | **halved** |
+
+The pre-registered suffix-specialist check fired: fresh-start competence lost half
+its episode length while the target metric moved by 0.02, which is inside what a
+15-point noise band on a related metric would suggest is nothing.
+
+**And the obvious excuse does not apply.** Cell training reported
+`successes 3754 / completions 24474 = 15.3%`, so the policy was not in a signal
+desert -- it had abundant reward. It simply spent it learning to finish from cells
+that already sit a layer or two below 10,000 (median cell height 7,920, median
+progress per episode 40 = one layer) rather than learning to survive the regime.
+
+So **exposure is not the deficit.** The regime error identified in v12 is real as a
+*measurement* problem -- every A/B in this ledger scored the wrong 43 seconds --
+but correcting the *training* distribution does not correct the capability. The
+policy cannot learn to survive minutes two through six even when trained there
+with a working reward signal.
+
+That closes the fourth class of explanation. The plateau is not:
+
+| class | closed by |
+|---|---|
+| reward shape | shaping, SVM, BC/distillation (5 arms) |
+| estimator | lambda sweep, rollout truncation, gamma bracket |
+| representation | outcome probe: no extractable signal at matched height |
+| exposure | this run |
+
+What has never been varied is the policy class itself -- 2.2M parameters,
+feedforward, one decision per world frame, an 18-way factored head. Every
+experiment in this ledger has changed what the network is *told*; none has changed
+what it *is*, or how often it acts.
