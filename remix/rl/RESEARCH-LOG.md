@@ -2074,6 +2074,140 @@ policies at the wrong control rate. Every measurement tool now reads the interva
 from the checkpoint, and `saturated-hazard.py` takes an explicit override so
 deployment interval is never again decided by accident.
 
+## v16 — the ladder promotes past rung 600 for the first time (2026-07-26)
+
+Seeded from repeat-4-s8, training at action repeat 4 and gating at 60 Hz.
+
+| | det | per-layer | climb | median |
+|---|---|---|---|---|
+| seed checkpoint, on the gate | 0.317 | 0.9262 | 11.2 h/s | 440 |
+| **after 8M more frames (rung-600-x0)** | **0.471** | **0.9510** | **13.8 h/s** | **560** |
+| control, same gate protocol | 0.344 | 0.9313 | ~10.5 h/s | 440 |
+
+**PROMOTE -> rung 850.** The v6 ladder self-terminated at rung 600 with
+NEEDS-ATTENTION; its refine midpoint of 550 fell inside 1.15x of the last pass, so
+it stopped. This is the first time any configuration has cleared that gate.
+
+Hazard at rung 600 falls 0.0687 -> 0.0490, a **1.40x reduction = 0.34 nats** --
+roughly double what the 8M A/B measured on its own (0.16), so extending training on
+top of action repeat keeps paying rather than saturating at 3M frames the way every
+previous rung did.
+
+Climb rate 10.5 -> 13.8 h/s, **+31%**. Three discount strengths spanning a 3.5x
+range of time preference were run specifically to buy speed and moved it by
+nothing. A change to *when the policy acts* bought it, with the objective never
+mentioning time.
+
+Caveats, since this is one run on a 512-episode gate: 0.471 against a control of
+0.344 is far outside the eval noise on that protocol, but the gate is a quarter the
+size of the 2048-episode standard adopted earlier today, and the seeded rung's own
+0.317 versus the matrix's 0.4097 for the same checkpoint shows how much that gate
+moves. The promotion decision is safe -- 0.471 clears the 0.50 promote band on
+per-layer terms and is nowhere near the boundary -- but the *magnitude* should be
+read from the 2048-episode numbers, not from these.
+
+What this does not yet show: rung 850 is still the easy regime. Saturated per-layer
+survival for this policy class was 0.7393 against the 0.9567 needed. Whether the
+ladder keeps climbing or stalls at 850-1000 like every previous attempt is the
+thing to watch, and it is now running unattended.
+
+### The wall moved but did not break (2026-07-26)
+
+| rung | frames | det | per-layer | outcome |
+|---|---|---|---|---|
+| 600 | 8M | 0.471 | 0.9510 | PROMOTE -> 850 |
+| 850 | 8M | 0.281 | 0.9420 | EXTEND |
+| 850 | +8M | 0.289 | 0.9433 | **REFINE -> 700** |
+
+The ladder stalled at 850 and refined back down. Same qualitative wall as v6, moved
+up one rung: v6 stopped at 600, this stops at 850, **+42% in target height** for a
+1.21x hazard reduction at the stall point (0.9313 -> 0.9433, 0.19 nats).
+
+**And it corrects last hour's entry.** I wrote that training on top of action repeat
+"keeps paying rather than saturating at 3M frames the way every previous rung did",
+on the strength of rung 600 going 0.317 -> 0.471 over an extension. Rung 850's
+extension bought +0.008 det and +0.0013 per-layer -- saturated, exactly like every
+previous rung. So the claim held at 600 and fails at 850, which means it was a
+property of that rung being easy for this policy, not a property of action repeat.
+Registering it because it was stated one entry earlier as a general finding.
+
+The pattern across the whole project is now consistent and worth naming plainly:
+**every intervention moves the wall a little and none removes it.** Action repeat is
+the largest mover so far -- 0.19 nats at the stall point, against 1.80 still needed
+in the saturated regime -- and it still leaves a wall of the same shape, at a rung
+where extension stops paying and the driver refines downward.
+
+### Rung 1000, where v6 collapsed (2026-07-26)
+
+det success **0.295**, per-layer **0.9523**, climb 12.5 h/s -> EXTEND.
+
+The v6 ladder reached this rung once and scored det **0.0215**. Same rung, same
+512-episode gate protocol:
+
+| | det | per-layer | hazard |
+|---|---|---|---|
+| v6 rung-1000-n11 | 0.0215 | 0.8576 | 0.1424 |
+| v15 rung-1000-n5 | **0.295** | **0.9523** | 0.0477 |
+
+**2.99x hazard reduction = 1.09 nats at this rung**, and 13.7x the success rate.
+
+That is a much larger gap than the 0.53 nats measured at rung 700 against the
+rung-600 control, and the reason is worth stating rather than banking: the harder
+the rung, the more the comparison rewards a policy that does not collapse. v6's
+0.0215 is a policy failing almost completely; part of the 1.09 nats is v6 being bad
+at rung 1000 rather than v15 being good. The rung-700 figure is the conservative
+one and the honest headline.
+
+Still in the extend band, so the rung is not passed. The relevant precedent is rung
+850, which also entered the extend band and then saturated on its extension.
+
+### The refine cycle is productive, not oscillation (2026-07-26)
+
+| step | rung | det | per-layer | outcome |
+|---|---|---|---|---|
+| 1 | 600 | 0.471 | 0.9510 | PROMOTE |
+| 2 | 850 | 0.281/0.289 | 0.9433 | REFINE down |
+| 3 | 700 | 0.441/0.484 | 0.9594 | PROMOTE |
+| 4 | 1000 | 0.295/0.340 | 0.9577 | REFINE down |
+| 5 | **850 again** | **0.420** | **0.9600** | extending |
+
+**Rung 850 revisited is 0.35 nats better than rung 850 first time** -- det 0.289 ->
+0.420, per-layer 0.9433 -> 0.9600, a 1.42x hazard reduction at the identical rung
+within about two and a half hours.
+
+That changes the read recorded two entries ago. "The wall moved but did not break"
+described a ladder bouncing off 850 and refining; what it is actually doing is
+using the refine step as intended -- dropping to a rung it can learn from, gaining
+real capability there, and returning stronger. The running maximum of per-layer
+survival is monotone across the whole trace: 0.9510 -> 0.9594 -> 0.9600. Nothing
+has regressed; the dips are the driver choosing easier targets, not the policy
+getting worse.
+
+Best per-layer is now **0.9600**, against 0.9313 for the control and 0.9567 as the
+threshold to reach 10k at all. In the easy regime that threshold is passed. The
+saturated regime remains the binding constraint at 0.7393, and no measurement yet
+says this ladder moves that number -- the last one taken said it moves
+proportionally, at 0.16 nats per 0.16 nats.
+
+### Bookkeeping failures this session, and the rules they produced
+
+Four entries -- v16 and the three ladder findings under it -- were appended to a
+stray `RESEARCH-LOG.md` at the **repo root** rather than `remix/rl/`, because a
+`cd` earlier in the command chain had moved the working directory. They were
+committed, so nothing was lost, but for several hours the canonical ledger was
+missing the entire ladder narrative. Merged back into position between v15 and
+v17; the stray file is removed.
+
+Two more of the same species, both already fixed above: a transfer measurement
+that existed only in stdout and was therefore unverifiable to anyone else, and
+three separate wait loops whose `pgrep` pattern matched their own command line.
+
+The rule these share: **a result is not a result until it is in the file it
+belongs in.** Piping to a terminal, appending to whatever directory happens to be
+current, and chaining on process tables all produce work that looks done and is
+not. The corresponding habits are: `cd` explicitly before appending, write
+measurements to a named path under the run directory, and chain on file markers.
+
 ## v17 — the ladder's entire operating range is pre-saturation (2026-07-26)
 
 Transfer measurement re-run and **persisted** at
