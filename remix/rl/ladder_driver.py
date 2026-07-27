@@ -54,6 +54,8 @@ STOCH_EVAL_EPISODES = 384
 CODE_DIR = Path.home() / 'dodgeblock-v5-code'
 PYTHON_BIN = Path.home() / 'envs/dodgeblock-rl/bin/python'
 
+ACTION_REPEAT = 4
+
 TRAIN_ENV = (
     'CUDA_VISIBLE_DEVICES=1 '
     f'DODGEBLOCK_PYTHON={PYTHON_BIN} '
@@ -62,6 +64,12 @@ TRAIN_ENV = (
     'DODGEBLOCK_COMPILE=1 '
     'DODGEBLOCK_CHECKPOINT_INTERVAL=2500000 '
     'DODGEBLOCK_EVAL_AFTER_TRAIN=1 '
+    # Train with action repeat, gate at 60 Hz. The eval matrix shows the training
+    # interval helps monotonically while the deployment interval only hurts, so a
+    # gate that inherited the training interval would score every rung in the
+    # worst column and stall the ladder on a measurement artefact.
+    f'DODGEBLOCK_ACTION_REPEAT={ACTION_REPEAT} '
+    'DODGEBLOCK_EVAL_CONTROL_INTERVAL=1 '
     f'DODGEBLOCK_EVAL_EPISODES={DET_EVAL_EPISODES} '
     'DODGEBLOCK_DEVICE=cuda'
 )
