@@ -35,3 +35,29 @@ What this does not yet show: rung 850 is still the easy regime. Saturated per-la
 survival for this policy class was 0.7393 against the 0.9567 needed. Whether the
 ladder keeps climbing or stalls at 850-1000 like every previous attempt is the
 thing to watch, and it is now running unattended.
+
+### The wall moved but did not break (2026-07-26)
+
+| rung | frames | det | per-layer | outcome |
+|---|---|---|---|---|
+| 600 | 8M | 0.471 | 0.9510 | PROMOTE -> 850 |
+| 850 | 8M | 0.281 | 0.9420 | EXTEND |
+| 850 | +8M | 0.289 | 0.9433 | **REFINE -> 700** |
+
+The ladder stalled at 850 and refined back down. Same qualitative wall as v6, moved
+up one rung: v6 stopped at 600, this stops at 850, **+42% in target height** for a
+1.21x hazard reduction at the stall point (0.9313 -> 0.9433, 0.19 nats).
+
+**And it corrects last hour's entry.** I wrote that training on top of action repeat
+"keeps paying rather than saturating at 3M frames the way every previous rung did",
+on the strength of rung 600 going 0.317 -> 0.471 over an extension. Rung 850's
+extension bought +0.008 det and +0.0013 per-layer -- saturated, exactly like every
+previous rung. So the claim held at 600 and fails at 850, which means it was a
+property of that rung being easy for this policy, not a property of action repeat.
+Registering it because it was stated one entry earlier as a general finding.
+
+The pattern across the whole project is now consistent and worth naming plainly:
+**every intervention moves the wall a little and none removes it.** Action repeat is
+the largest mover so far -- 0.19 nats at the stall point, against 1.80 still needed
+in the saturated regime -- and it still leaves a wall of the same shape, at a rung
+where extension stops paying and the driver refines downward.
