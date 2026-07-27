@@ -2374,3 +2374,91 @@ asymptote well below what 10k needs, and the ladder reached it in 96M frames.
 One confound this data cannot separate: rung height and cumulative frames are
 perfectly correlated along a ladder trace. Every claim above is about "how far
 the ladder got", not about height or frames individually.
+
+## v20 — the network sees death coming and dies anyway
+
+Three measurements tonight, aimed at "what would a solution actually need". Two
+killed hypotheses I had formed hours earlier; the third overturned a conclusion
+this project has been running on for days.
+
+### Shelter is not the lever, and it is per-layer negative
+
+The audit of the seed-7 10k demo (`audit-demo-trajectories.mjs`) shows winning play
+is 41.1% sheltered overall, 46.9% above height 4000, with bands at 85-98%. The
+policy looked like it sat near 18%, so shelter occupancy looked like the gap.
+
+It is not. Measured from banked saturated cells (`shelter-hazard.py`), the policy
+is already **49.9% sheltered** in that regime -- more than the demo. The 18% figure
+came from fresh-start training that never leaves the flat opening.
+
+Shelter does protect, and it does cost:
+
+    condition     occupancy   hazard/frame   height/frame   per-layer survival
+    unsheltered      0.501       0.002314        0.5074           0.8175
+    sheltered        0.499       0.001187        0.1940           0.7553
+
+Hiding halves the per-frame death rate and cuts the climb rate by 2.6x. Since the
+invariant is survival per *layer*, not per second, that trade is a net loss: the
+counterfactual composite falls monotonically as occupancy rises, from 0.8175 at
+zero shelter to 0.7553 at full shelter. This is the same conclusion the 2026-07-24
+speed reframe reached from the other side -- exposure is hazard x time, so climbing
+is a survival strategy -- now measured directly on the conditional hazards.
+
+### The observation is not truncated
+
+FALLING_COUNT is 32 and the encoder drops the overflow, so the obvious next
+suspect was blindness in the saturated regime. Across all 485 saturated cells the
+falling-block count is median 4, p90 6, **max 10**. The cap never binds, and the
+kept blocks are sorted by ETA to the player's height anyway. Zero truncation.
+
+### The auxiliary hazard head was cancelled on a misreading -- and is redundant anyway
+
+`outcome-probe.py` measured a probe on the frozen trunk at AUC 0.494-0.500 and
+concluded "no function of this observation predicts the outcome", cancelling the
+auxiliary hazard head. That head has been implemented and wired to `--hazard-coef`
+ever since, defaulted to 0.0, never once enabled.
+
+Two things were wrong with the inference. It read the *frozen trunk*, so it could
+not distinguish "this network does not encode danger" from "danger is not
+encodable" -- only the first was tested. And it sampled height bands 100-400,
+which at 14 h/s is 7-29 seconds: the flat opening, where this policy almost never
+dies.
+
+Re-run in the saturated regime, with a raw-observation probe beside the trunk
+probe on identical labels and an episode-level split (`raw-outcome-probe.py`,
+99,850 samples over 768 episodes):
+
+    label            raw observation   frozen trunk
+    dies within 10f       0.7789          0.8308
+    dies within 30f       0.7110          0.7637
+    dies within 90f       0.6338          0.6789
+
+Both are far above chance, and **the trunk beats the raw observation at every
+horizon**. The representation is not blind to danger; it has learned features that
+predict imminent death better than the input does. An auxiliary hazard head would
+indeed change little -- not because the signal is absent, as recorded, but because
+it is already there.
+
+### What that leaves
+
+Put beside the two facts already in this log, the picture is unambiguous:
+
+  - `bank-viability.mjs`: 94.5% of saturated cells have an escape findable by
+    sticky-random flailing within 64 tries. The states are survivable.
+  - this probe: the network predicts its own death 10-30 frames out at AUC
+    0.76-0.83. The danger is perceivable, and perceived.
+  - and it dies at a mean of 10.7 seconds from those cells regardless.
+
+Escapable states, perceived danger, and death anyway. The deficit is not
+perception, not strategy inventory, not reward design, and not curriculum -- all
+of which have now been measured or falsified. It is **action selection at
+perceived-critical states**, which is a credit-assignment problem.
+
+That is the direction two independent reviews converged on days ago and which has
+still never been run: CRN-paired advantages / VinePPO (arXiv:2410.01679) over the
+exact-restore simulator, where `restoreSlot` does no reseed so two branches from
+one snapshot meet bit-identical blocks. Tonight's probe supplies the piece that
+plan was missing -- a cheap, accurate trigger for *which* states deserve branch
+rollouts. AUC 0.83 at ten frames is a critical-state detector. And the 24M run
+measured collect_fraction 0.178, so ~82% of wall-clock the env fleet sits idle:
+the branches are close to free.
