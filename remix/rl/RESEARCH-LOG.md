@@ -2517,3 +2517,40 @@ a process was visible at the time; it was already doomed. Relaunched under
 Remote long jobs need a supervisor that outlives the connection. `nohup` without
 `&` is not one, and an exit code from an ssh wrapper says nothing about the job
 inside it.
+
+## v22 — the ladder effect replicates across four independent banks
+
+v19 and v20 both carried the same caveat: every saturated-transfer number came
+from one go-explore bank (seed-1). Repeating rung-600 vs rung-1000 on three more
+banks, identical config (512 episodes, interval 1, same checkpoints):
+
+    bank      rung 600   rung 1000    delta    nats saved   gap closed
+    seed-1     0.7410     0.8213     +0.0803     0.1029        40.3%
+    seed-2     0.6496     0.7211     +0.0715     0.1044        27.0%
+    seed-3     0.6764     0.7747     +0.0983     0.1357        39.1%
+    seed-5     0.7489     0.8230     +0.0741     0.0944        38.5%
+
+    delta   mean +0.0811  sd 0.0121  min +0.0715  max +0.0983
+    nats    mean  0.1094  range 0.0944 - 0.1357
+
+The effect replicates on every bank, in the same direction, at closely similar
+magnitude. That settles the one open objection to v19.
+
+Two things to carry forward from it.
+
+**Absolute levels are bank-dependent and single-bank numbers need error bars.**
+Rung-1000 saturated survival ranges 0.7211 to 0.8230 across banks -- a span of
+0.10, larger than the entire effect being measured. Seed-2's cells are simply
+harder (329 saturated cells vs 434-485 elsewhere, and a lower baseline at every
+checkpoint). Any absolute per-layer figure quoted from one bank should carry
+roughly +/- 0.05, and comparisons must hold the bank fixed. The 0.8213 that has
+been the headline number all night is from the optimistic end.
+
+**Report the effect in nats, not in survival or in "gap closed".** Across banks
+the delta in survival varies 17% relative and "gap closed" varies from 27% to
+40%, because both depend on where the baseline sits. The log-hazard difference is
+the stable quantity: 0.109 +/- 0.017 nats/layer regardless of how hard the bank
+is. The composing unit is also the reproducible one.
+
+Corrected headline: the ladder buys **0.109 nats/layer, about 36% of the distance
+to 10k-viability (range 27-40%)**, not the 40.8% quoted from seed-1 alone.
