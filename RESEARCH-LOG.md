@@ -61,3 +61,27 @@ The pattern across the whole project is now consistent and worth naming plainly:
 the largest mover so far -- 0.19 nats at the stall point, against 1.80 still needed
 in the saturated regime -- and it still leaves a wall of the same shape, at a rung
 where extension stops paying and the driver refines downward.
+
+### Rung 1000, where v6 collapsed (2026-07-26)
+
+det success **0.295**, per-layer **0.9523**, climb 12.5 h/s -> EXTEND.
+
+The v6 ladder reached this rung once and scored det **0.0215**. Same rung, same
+512-episode gate protocol:
+
+| | det | per-layer | hazard |
+|---|---|---|---|
+| v6 rung-1000-n11 | 0.0215 | 0.8576 | 0.1424 |
+| v15 rung-1000-n5 | **0.295** | **0.9523** | 0.0477 |
+
+**2.99x hazard reduction = 1.09 nats at this rung**, and 13.7x the success rate.
+
+That is a much larger gap than the 0.53 nats measured at rung 700 against the
+rung-600 control, and the reason is worth stating rather than banking: the harder
+the rung, the more the comparison rewards a policy that does not collapse. v6's
+0.0215 is a policy failing almost completely; part of the 1.09 nats is v6 being bad
+at rung 1000 rather than v15 being good. The rung-700 figure is the conservative
+one and the honest headline.
+
+Still in the extend band, so the rung is not passed. The relevant precedent is rung
+850, which also entered the extend band and then saturated on its extension.
