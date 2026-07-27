@@ -2020,3 +2020,56 @@ This does not rescue any of the falsified directions -- their point estimates si
 below the control, not just inside a band -- but it does mean the standard has
 been sloppier than the ledger claimed, and the fix is that every comparison must
 use the same eval episode count. It is now 2048 everywhere.
+
+### The eval matrix, and two of my own claims reversed (2026-07-26)
+
+Same three checkpoints, every deployment interval, 2048 episodes each:
+
+| trained \ deployed | 1 | 2 | 4 |
+|---|---|---|---|
+| 1 (control) | 415.53 | 417.42 | 359.75 |
+| 2 | 441.78 | 436.58 | 396.64 |
+| 4 | **461.35** | 449.92 | 422.07 |
+
+The two intervals do completely different things.
+
+**Training interval helps monotonically at every deployment interval** -- down all
+three columns, 415/442/461, 417/437/450, 360/397/422. **Deployment interval only
+hurts**: across every row the best column is 1, and 4 costs 40-60 points. Control
+deployed at interval 2 is 417.42 against 415.53 at 1, i.e. nothing -- so repeating
+actions at deployment buys nothing by itself. The entire effect is that training
+with repeat produces a better policy function, which is then best run at 60 Hz.
+
+That is the temporal-abstraction-as-training-regulariser reading, and it is now
+measured rather than inferred.
+
+**Reversal 1.** v14 claimed a dose-response and a later entry retracted it as a
+seed-7 artifact. The retraction was the wrong one: it compared repeat-2-s8 at
+deployment 1 against repeat-4-s8 at deployment 4 without noticing the deployment
+intervals differed, because the evaluator bug made that invisible. At fixed
+deployment the dose-response is real and holds in all three columns. The original
+claim was right; my correction of it was not.
+
+**Reversal 2, and the more important one.** The transfer test was reported as
+"does not transfer" on a measurement taken at deployment interval 4 -- the worst
+column in the matrix. Re-run at interval 1:
+
+| saturated (240 s+) per-layer | |
+|---|---|
+| baseline control | 0.6941 |
+| repeat-4 at interval 4 (what I reported) | 0.7054 |
+| **repeat-4 at interval 1** | **0.7393** |
+
+Hazard 0.3059 -> 0.2607, a **1.17x reduction = 0.16 nats** -- the same gain it
+shows at rung 600, so it transfers proportionally rather than not at all. The
+remaining distance to 10k-at-all falls from 1.96 to **1.80 nats**.
+
+So the honest summary of action repeat: a real, replicated, dose-responsive
+training effect worth ~8% of the remaining gap, which does carry into the regime
+the goal lives in. That is the first thing in this ledger of which any of that
+can be said -- and it is still 8%.
+
+Both reversals came from the same root cause: an evaluator that silently ran
+policies at the wrong control rate. Every measurement tool now reads the interval
+from the checkpoint, and `saturated-hazard.py` takes an explicit override so
+deployment interval is never again decided by accident.

@@ -54,6 +54,10 @@ def main():
     parser.add_argument('--seed', type=int, default=0x5A7_0BE5)
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--stochastic', action='store_true')
+    parser.add_argument('--control-interval', type=int, default=0,
+                        help='override the deployment interval; the eval matrix '
+                             'shows training interval and deployment interval are '
+                             'separate variables and 1 deploys best')
     args = parser.parse_args()
 
     with gzip.open(args.bank) as handle:
@@ -76,7 +80,7 @@ def main():
     agent = network_class().to(device)
     load_agent_state(agent, saved['agent'])
     agent.eval()
-    interval = checkpoint_control_interval(saved)
+    interval = args.control_interval or checkpoint_control_interval(saved)
 
     # The bank declares targetHeight 10000 and the env refuses a mismatch; that
     # also guarantees no episode ends by succeeding, so the estimate is uncensored.
