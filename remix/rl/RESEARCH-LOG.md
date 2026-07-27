@@ -2554,3 +2554,64 @@ is. The composing unit is also the reproducible one.
 
 Corrected headline: the ladder buys **0.109 nats/layer, about 36% of the distance
 to 10k-viability (range 27-40%)**, not the 40.8% quoted from seed-1 alone.
+
+## v23 — the policy does walk past escapes, and fixing that is not enough
+
+The critical-state advantage estimator is a week of building. `policy-regret.py`
+buys its ceiling for an hour first. Along the policy's own trajectory out of
+saturated cells, every 15 frames: snapshot, clone into 18 lanes, force a
+different action in each, then let **the policy itself** drive all 18 forward.
+No reseed on restore, so all 18 meet bit-identical blocks and any difference is
+caused by the forced action. That is exactly what a one-step lookahead over the
+current policy would see. 1500 probes, rung-1000 actor, bank seed-1:
+
+    horizon   policy lives   some action lives   critical   regret|escape   regret|critical
+       30        0.9713           0.9820          0.0467       0.0109          0.2286
+       60        0.9480           0.9720          0.1047       0.0247          0.2293
+       90        0.9220           0.9627          0.1660       0.0422          0.2450
+
+**The first reading is confirmed.** At critical states -- where not all 18 actions
+survive -- the policy walks past an available escape **24.5%** of the time, and
+the escape is reachable by its own continuation, not by a search. Action selection
+at critical states is a real deficit, not a story.
+
+### The ceiling, which is the point of having measured it
+
+    P(policy dies within 90f)          0.0780
+    P(best single action dies)         0.0373
+    hazard ratio available             2.09x
+
+    now                    0.1969 nats/layer   survival 0.8213
+    PERFECT one-step       0.0941 nats/layer   survival 0.9102
+    reach 10k at all       0.0443 nats/layer   survival 0.9567
+    consistent 10k         0.0028 nats/layer   survival 0.9972
+
+A policy that always picked the best available action -- the exact thing the whole
+paired-advantage direction is trying to approximate, achieved perfectly -- lands
+at 0.910. That closes **67% of the remaining gap to reaching 10k at all**, and is
+still **2.1x short of even that**, and **34x short of consistent 10k**.
+
+So the direction is worth building: 2.09x is a larger single win than anything
+found so far, and the ladder's entire contribution was 1.53x. But it is provably
+insufficient alone, and that was worth knowing before a week of work rather than
+after. Any plan that ends at "fix credit assignment at critical states" ends at
+0.91 per layer, which reaches 10k roughly never.
+
+### Regret grows with lead time, which says where the rest is
+
+Regret climbs 0.011 -> 0.025 -> 0.042 across horizons 30/60/90, and the critical-
+state rate climbs 0.047 -> 0.105 -> 0.166. Both readings the probe was written to
+separate are true at once: there is one-step regret, AND more of it becomes
+visible the further out you look. A state that is unwinnable at 30 frames but
+winnable at 90 was decided before the probe fired.
+
+That is the argument for the second prong being necessary rather than optional --
+margin, and not entering those states, rather than escaping them. Extending to
+horizon 240 to see whether the trend keeps climbing, plus a seed-3 replication,
+since v22 showed absolute levels swing 0.10 between banks.
+
+Two limits stated precisely. This is one-step regret under the *current* policy's
+continuation, so a state where no single action helps but a two-action sequence
+does reads as unrescuable: the true ceiling is higher than 2.09x, not lower. And
+the continuation being the current policy means the ceiling rises as the policy
+improves -- 2.09x is the ceiling on one distillation round, not on the method.
