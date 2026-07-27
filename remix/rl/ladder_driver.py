@@ -44,7 +44,12 @@ EXTEND_LOW = 0.10
 POST_EXTEND_PROMOTE = 0.35
 STOCH_RESCUE = 0.30
 MIN_RUNG_RATIO = 1.15
-MAX_LAUNCHES = 30
+# Sized so WALL_HOURS binds, not this. Rungs were 20M frames when 30 was chosen;
+# at 8M they resolve in ~25 min, so 72 h is ~170 launches and a cap of 30 stops a
+# healthy ladder seven hours in with 60 h of budget unspent. Letting the wall bind
+# is safe because the ladder already halts itself the moment it stops improving:
+# a refined rung within MIN_RUNG_RATIO of the last pass ends the run.
+MAX_LAUNCHES = 200
 MAX_RETRIES = 2
 WALL_HOURS = 72.0
 POLL_SECONDS = 60

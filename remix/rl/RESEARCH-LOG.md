@@ -2251,3 +2251,59 @@ Two things follow for how to spend GPU:
 2. But "keep climbing rungs" is not a plan for 10k. The plan would need something
    that improves saturated per-layer survival directly, and the one measurement
    available says the ladder moves it only proportionally.
+
+## v18 — the ladder ran out of rungs, not out of progress
+
+v15 stopped at 23:39 with NEEDS-ATTENTION after passing 600, 700, 850 and 1000.
+Reading the stop condition carefully matters, because it is not the one the v17
+entry above was bracing for:
+
+    rung 1150 fresh      det 0.268  per_layer 0.9552
+    rung 1150 extended   det 0.297  per_layer 0.9586   (0.35 promotes)
+    -> refine to geometric midpoint 1050
+    -> 1050 is within MIN_RUNG_RATIO 1.15 of the last pass at 1000
+    -> STOP
+
+Training did not collapse and the extension did help. What ran out was curriculum
+*resolution*: once consecutive rungs are closer together than the refine guard
+allows, there is no easier rung to back off to. The driver is behaving exactly as
+designed; the design simply has a floor, and rung 1150 is where this policy meets it.
+
+The stall was predictable from arithmetic available before it happened. A gate
+demanding det 0.35 at rung R demands per-layer survival 0.35^(40/R), which climbs
+steeply as rungs get taller, while achieved per-layer falls as more of each episode
+sits in harder territory:
+
+    rung 1000  needs 0.9589   achieved 0.9646   pass
+    rung 1150  needs 0.9641   achieved 0.9586   fail
+    rung 1400  needs 0.9705
+    rung 3360  needs 0.9876   <- where difficulty saturation begins
+    rung 10000 needs 0.9958
+
+The crossing sits between 1000 and 1150, and that is where it stopped. Worth
+keeping: this table predicts a ladder's wall from its own gate constant and the
+measured climb rate, without running it.
+
+### The launch cap was mis-sized by 5x, and it never bound
+
+MAX_LAUNCHES was 30, chosen when rungs were 20M frames. At 8M they resolve in 25.5
+minutes, so the 72-hour wall is ~170 launches and the cap would have stopped a
+healthy ladder seven hours in with 60 hours unspent. Raised to 200 so WALL_HOURS
+binds as designed; the ladder's own MIN_RUNG_RATIO stop is the real safety net and
+it fired first, at 13 launches. The fix was still worth making -- it just was not
+this run's binding constraint. Constants sized against a workload should be
+re-derived when the workload changes shape, not carried forward.
+
+### The self-matching pgrep bit a fourth time
+
+The rule written hours earlier -- "chain on file markers, never process tables" --
+was scoped to *wait loops*. This was a one-shot verification: after killing the
+driver, `pgrep -f "ladder_driver.py --state-dir"` matched the ssh `bash -c` running
+the check itself, reported DRIVER STILL ALIVE, and `set -e` aborted the script
+before it relaunched. The driver was down for ~90 seconds with no one polling.
+
+Harmless here only because the ladder had already stopped. The rule is wider than
+it was written: **any** pattern match against the process table can match the shell
+doing the matching. Check named PIDs, or exclude own tree, or match a pattern the
+checking command cannot contain. Scoping a rule to the situation that produced it
+is how it fails to cover the next one.
