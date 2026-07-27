@@ -85,3 +85,31 @@ one and the honest headline.
 
 Still in the extend band, so the rung is not passed. The relevant precedent is rung
 850, which also entered the extend band and then saturated on its extension.
+
+### The refine cycle is productive, not oscillation (2026-07-26)
+
+| step | rung | det | per-layer | outcome |
+|---|---|---|---|---|
+| 1 | 600 | 0.471 | 0.9510 | PROMOTE |
+| 2 | 850 | 0.281/0.289 | 0.9433 | REFINE down |
+| 3 | 700 | 0.441/0.484 | 0.9594 | PROMOTE |
+| 4 | 1000 | 0.295/0.340 | 0.9577 | REFINE down |
+| 5 | **850 again** | **0.420** | **0.9600** | extending |
+
+**Rung 850 revisited is 0.35 nats better than rung 850 first time** -- det 0.289 ->
+0.420, per-layer 0.9433 -> 0.9600, a 1.42x hazard reduction at the identical rung
+within about two and a half hours.
+
+That changes the read recorded two entries ago. "The wall moved but did not break"
+described a ladder bouncing off 850 and refining; what it is actually doing is
+using the refine step as intended -- dropping to a rung it can learn from, gaining
+real capability there, and returning stronger. The running maximum of per-layer
+survival is monotone across the whole trace: 0.9510 -> 0.9594 -> 0.9600. Nothing
+has regressed; the dips are the driver choosing easier targets, not the policy
+getting worse.
+
+Best per-layer is now **0.9600**, against 0.9313 for the control and 0.9567 as the
+threshold to reach 10k at all. In the easy regime that threshold is passed. The
+saturated regime remains the binding constraint at 0.7393, and no measurement yet
+says this ladder moves that number -- the last one taken said it moves
+proportionally, at 0.16 nats per 0.16 nats.
