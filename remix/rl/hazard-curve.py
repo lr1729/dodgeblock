@@ -32,6 +32,7 @@ import torch
 
 from ppo_v2 import (
     ActorCriticNetwork,
+    checkpoint_control_interval,
     AutoregressiveActionDistribution,
     STICKY_MODEL_ARCHITECTURE,
     StickyActorCriticNetwork,
@@ -67,6 +68,7 @@ def main():
     agent = network_class().to(device)
     load_agent_state(agent, saved['agent'])
     agent.eval()
+    interval = checkpoint_control_interval(saved)
 
     # Target far above anything reachable, so no episode ends by succeeding and
     # the hazard estimate is uncensored.
@@ -83,17 +85,20 @@ def main():
     deaths = []          # (height, seconds) of each death
 
     try:
-        for _ in range(args.max_frames):
-            observation = tensor_observation(packet_observation(packet), device)
-            with torch.inference_mode(), torch.autocast(
-                device_type=device.type, dtype=torch.bfloat16,
-                enabled=device.type == 'cuda',
-            ):
-                logits, _value, _hazard = agent(observation)
-                distribution = AutoregressiveActionDistribution(logits, observation)
-                sampled = (distribution.sample() if args.stochastic
-                           else distribution.mode())
-            actions = sampled.cpu().numpy().astype(np.uint8)
+        held = np.zeros(count, np.uint8)
+        for frame in range(args.max_frames):
+            if frame % interval == 0:
+                observation = tensor_observation(packet_observation(packet), device)
+                with torch.inference_mode(), torch.autocast(
+                    device_type=device.type, dtype=torch.bfloat16,
+                    enabled=device.type == 'cuda',
+                ):
+                    logits, _value, _hazard = agent(observation)
+                    distribution = AutoregressiveActionDistribution(logits, observation)
+                    sampled = (distribution.sample() if args.stochastic
+                               else distribution.mode())
+                held = sampled.cpu().numpy().astype(np.uint8)
+            actions = held.copy()
             actions[~active] = 254
             live = packet['current_heights']
             peak[active] = np.maximum(peak[active], live[active])
@@ -154,6 +159,7 @@ def main():
 
     print(json.dumps({
         'checkpoint': args.checkpoint,
+        'control_interval': interval,
         'episodes': count,
         'deaths': len(deaths),
         'mean_peak_height': round(float(peak_all.mean()), 1),

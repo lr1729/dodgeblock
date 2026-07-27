@@ -1958,3 +1958,65 @@ repeat is better is not resolved, and nothing here supports 4 over 2.
 Practical consequence: repeat-8 will not settle a dose-response either at one seed,
 and the transfer test should run on repeat-2, which has three seeds behind it,
 rather than on whichever single arm scored highest.
+
+## v15 — the evaluator bug, and what action repeat actually is (2026-07-26)
+
+### The bug
+
+`--action-repeat` was added to the trainer and wired through the env, but
+`evaluate_ppo_v2.py` read only `fixed_control_interval` from a checkpoint, never
+`action_repeat`. So every repeat result before the patch is a **repeat-trained
+policy evaluated at 60 Hz** -- training interval and deployment interval were
+confounded in every number reported. Found by Codex, not by me; I added the flag
+and never checked the read side.
+
+The same bug was in six of my own measurement tools, including
+`saturated-hazard.py`, which was minutes from running the transfer test on a
+repeat-4 policy at the wrong control rate. All now read the interval from the
+checkpoint via a shared `checkpoint_control_interval`, and the running snapshot
+was patched in place before it reached that step.
+
+### Splitting the two intervals
+
+| evaluated at | arms | paired gain |
+|---|---|---|
+| 60 Hz (unmatched) | repeat-2 s7/s8/s9, repeat-4 s7 | +11.54, +32.56, +32.21, +34.96 |
+| training interval (matched) | repeat-4 s8/s9 | +12.85, +6.78 |
+| repeat 8, matched | repeat-8 s7 | **-18.27** |
+
+Two things fall out. **Matched gains are roughly a third of unmatched ones**, so
+most of what was reported is a *training* effect: repeat produces a better policy
+function, which is then best deployed at full 60 Hz rather than at its training
+interval. And **repeat 8 is clearly negative**, giving the turnover the mechanism
+predicts -- the death autopsy put the causal window of a death at 10-20 frames, so
+an 8-frame commitment starts costing reaction time.
+
+### The transfer test: it does not transfer
+
+repeat-4-s8, measured from banked cells past the 240 s saturation point:
+
+| | baseline | repeat-4 |
+|---|---|---|
+| saturated per-layer | 0.6941 | **0.7054** |
+| ramp per-layer | 0.6526 | 0.6609 |
+
+Needed to reach 10k at all: 0.9567. **Action repeat is a real effect on the first
+40 seconds and does essentially nothing where the goal lives.** That was the
+pre-registered question and it has a clear answer.
+
+### A correction that runs the other way
+
+The control's seed-7 number, 424.38, came from a **512**-episode evaluation while
+every arm and both other control seeds used 2048. Re-evaluated at 2048 the same
+checkpoint gives **415.53** [407.73, 423.87].
+
+So the noise band was never 409.2-424.4. At matched evaluation size it is
+**409.22-415.53, a span of 6.31** -- less than half what has been quoted since v11,
+and inflated purely by mixing eval sample sizes. Every arm judged "inside the
+band" was judged against a band 2.4x too wide, and repeat-2's seed-7 paired
+difference is +20.39 rather than +11.54.
+
+This does not rescue any of the falsified directions -- their point estimates sit
+below the control, not just inside a band -- but it does mean the standard has
+been sloppier than the ledger claimed, and the fix is that every comparison must
+use the same eval episode count. It is now 2048 everywhere.

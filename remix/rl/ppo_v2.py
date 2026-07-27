@@ -96,6 +96,18 @@ def load_agent_state(agent, state):
             f'checkpoint mismatch: missing={missing} unexpected={list(unexpected)}')
 
 
+def checkpoint_control_interval(saved):
+    """Frames each action is held, as the checkpoint was trained.
+
+    A policy trained with --action-repeat N chooses one action per N frames. A
+    tool that re-samples every frame is measuring that policy off its own control
+    timescale, which silently changes what is being measured. Reading the interval
+    from the checkpoint keeps every measurement matched to training by default.
+    """
+    saved_args = saved.get('args', {}) or {}
+    return int(saved_args.get('fixed_control_interval', 0)
+               or saved_args.get('action_repeat', 0) or 1) or 1
+
 def hazard_labels(deaths, dones):
     """Per-state labels for "does this episode die within h frames".
 
