@@ -2073,3 +2073,47 @@ Both reversals came from the same root cause: an evaluator that silently ran
 policies at the wrong control rate. Every measurement tool now reads the interval
 from the checkpoint, and `saturated-hazard.py` takes an explicit override so
 deployment interval is never again decided by accident.
+
+## v17 — the ladder's entire operating range is pre-saturation (2026-07-26)
+
+Transfer measurement re-run and **persisted** at
+`~/dodgeblock-transfer/repeat-4-s8-interval1.json` (it had only ever been piped to
+stdout, which makes it unverifiable — a fair catch). Reproduces exactly: saturated
+per-layer **0.7393**, ramp 0.6389, at deployment interval 1.
+
+Now convert every rung into elapsed time at the policy's measured 14 h/s climb:
+
+| rung | elapsed | regime |
+|---|---|---|
+| 600 | 43 s | pre-saturation |
+| 850 | 61 s | pre-saturation |
+| **1000 (the current wall)** | **71 s** | **pre-saturation** |
+| 3360 | 240 s | saturation begins |
+| 10000 | 714 s | the goal |
+
+**The ladder walls at 71 seconds of a 714-second problem, and difficulty has not
+started saturating at any rung it has ever run.** Every number in this ledger --
+all eight falsified interventions, the noise floor, the eval matrix, the action
+repeat result, all sixteen ladder launches -- comes from the first tenth of the
+task by time.
+
+That is a different statement from v12's "we optimised the first 43 seconds". This
+one is about the *ladder mechanism*, not the A/B protocol: the driver would have to
+reach rung ~3360 before its gates start scoring the regime that actually binds, and
+it is currently cycling 850 <-> 1000 with rung-1000 barely moving (0.340 -> 0.342
+between visits).
+
+So the honest position on scaling: there is **no scalable recipe yet**. There is
+one working lever (training-time action repeat, ~0.5 nats) and a ladder that grinds
+upward inside the easy tenth of the problem. Whether the ladder mechanism reaches
+3360 at all is unknown and currently unsupported by its own trajectory -- and even
+arriving there only *begins* the measurement that matters.
+
+Two things follow for how to spend GPU:
+
+1. Letting the ladder run overnight is still correct. Refine cycles demonstrably
+   add capability (rung 850 gained 0.35 nats between visits), the budget is 19
+   launches and 66 wall-hours, and it costs nothing to find out where it converges.
+2. But "keep climbing rungs" is not a plan for 10k. The plan would need something
+   that improves saturated per-layer survival directly, and the one measurement
+   available says the ladder moves it only proportionally.
