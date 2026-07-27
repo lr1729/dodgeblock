@@ -2307,3 +2307,70 @@ it was written: **any** pattern match against the process table can match the sh
 doing the matching. Check named PIDs, or exclude own tree, or match a pattern the
 checking command cannot contain. Scoping a rule to the situation that produced it
 is how it fails to cover the next one.
+
+## v19 — the ladder does move the goal metric, and it is already flattening
+
+Saturated-regime per-layer survival measured from banked cells (seed-1, 512
+episodes, interval 1, identical config) for four checkpoints along the v15 ladder:
+
+    checkpoint            cumulative   ramp     saturated   nats/layer   gap closed
+    baseline, no ladder        -       0.6389    0.7393       0.3021        0.0%
+    rung  600 (42.9 s)        16M      0.6290    0.7410       0.2998        0.9%
+    rung  700 (50.0 s)        48M      0.6889    0.7958       0.2284       28.6%
+    rung  850 (60.7 s)        80M      0.7530    0.8191       0.1995       39.8%
+    rung 1000 (71.4 s)        96M      0.7431    0.8213       0.1969       40.8%
+
+"gap closed" is in log-hazard, the unit that composes over 250 layers: the
+distance from the baseline's 0.3021 nats/layer to the 0.0443 that reaching 10k
+at all requires.
+
+This is the first thing in the project to move the goal metric. It moves it a
+long way -- 40% of the distance -- and it does so in a regime the policy never
+trains in. The ladder trains from fresh starts only (cell_banks [] in every run,
+verified), rung 1000 is 71 seconds, and these cells sit past 240. Whatever the
+policy learned at rung 1000 transfers to states it has never seen.
+
+### A prediction, registered in advance, that was wrong
+
+Three points in (600, 850, 1000) the curve looked like a step: 0.7410 at rung
+600, indistinguishable from baseline, then 0.8191 at rung 850, then flat. And
+rung 850 has a property no earlier rung has -- at 14 h/s it is 60.7 s, the first
+rung whose target cannot be reached without surviving into the difficulty ramp
+that begins at 60 s. Difficulty here is a function of elapsed time, not height,
+so the story wrote itself: what transfers is not climbing higher, it is having
+been forced to cope with difficulty rising *while you play*. A rung that fits
+inside the flat opening teaches nothing that carries.
+
+That predicted rung 700 -- 50.0 s, entirely inside the opening -- would measure
+near baseline. It was written to PREREG-700.md while the job was still running.
+
+Rung 700 came in at 0.7958, closing 28.6% of the gap. The hypothesis is dead.
+A rung that never leaves the flat opening captured most of the effect.
+
+Worth keeping the discipline that caught it: three points and a mechanism that
+explains them is not evidence, because the mechanism was chosen *after* seeing
+the three points. The fourth point cost nine minutes and killed it.
+
+### What the shape actually is
+
+Against cumulative frames the curve is smooth and decelerating hard:
+
+    16M -> 48M   (+32M):  +27.7 points of gap
+    48M -> 80M   (+32M):  +11.2 points
+    80M -> 96M   (+16M):   +1.0 point   (~2.0 per 32M)
+
+Each 32M block buys roughly 40% of what the previous one did. Continued at that
+ratio the series converges near 44% of the gap -- not 100%. Extrapolating four
+single measurements is worth exactly what it costs, but the direction is not
+ambiguous, and it agrees with the other thing that happened at 96M: the ladder
+metric stalled at rung 1150 at the same time the goal metric stopped moving.
+Both plateaued together.
+
+So the honest position is better than v17's and still short of a recipe. There
+IS something that improves saturated survival, and it is ordinary curriculum
+training rather than any of the nine falsified levers. But it appears to have an
+asymptote well below what 10k needs, and the ladder reached it in 96M frames.
+
+One confound this data cannot separate: rung height and cumulative frames are
+perfectly correlated along a ladder trace. Every claim above is about "how far
+the ladder got", not about height or frames individually.
