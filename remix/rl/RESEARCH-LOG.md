@@ -2462,3 +2462,58 @@ plan was missing -- a cheap, accurate trigger for *which* states deserve branch
 rollouts. AUC 0.83 at ten frames is a critical-state detector. And the 24M run
 measured collect_fraction 0.178, so ~82% of wall-clock the env fleet sits idle:
 the branches are close to free.
+
+## v21 — the CRN direction survives its go/no-go, and its headline number was 15x too big
+
+`crn-probe.py` was written days ago to test the two assumptions under the paired-
+advantage direction before anyone built the estimator. It had never been run. On
+the rung-1000 actor, 400 states x 32 lanes x 90-frame horizon:
+
+    mean_branch_survival            0.9384
+    decision_point_rate             0.11
+    pairwise_discordance            0.03287
+    independent_contrast_variance   0.11568
+    implied_sample_reduction        3.5
+    dangerous states                22 of 400, decision_point_rate 0.50
+
+**Assumption A (variance) passes, but small.** The probe's own criterion was
+"discordance a few percent -> one to two orders of magnitude fewer samples;
+discordance ~50% -> the futures are not shared and the direction is void."
+Discordance is 3.3%, so the futures are genuinely shared and the direction is
+live. But the sample reduction is **3.5x, not the 50-200x** this log and the
+project memory have both been quoting.
+
+The old figure assumed the independent contrast had variance ~0.25-0.5, which is
+true only when survival is a coin flip. Measured survival over 90 frames is 0.938,
+so the independent contrast variance is already only 0.116, and CRN can divide it
+by 3.5. Estimating a variance ratio from the pessimistic end of the outcome
+distribution overstated the win by an order of magnitude. Corrected everywhere.
+
+**Assumption B (screening) is where the value actually is.** Only 11% of states
+are decision points at all -- for 89%, every action produces the same 90-frame
+outcome, so uniform PPO spends most of its gradient budget on states that cannot
+distinguish actions. Restricted to states the danger signal flags, the decision
+rate rises to 0.50. That is 22 states, so read it as 0.50 +/- 0.21 and not more.
+
+Combined with v20, the two results compose into one mechanism: the trunk detects
+imminent death at AUC 0.83, and states so flagged are ~4.5x more likely to be
+genuine decision points. Detector picks the 5% of states that matter; paired
+branches resolve the action choice there with 3.5x less noise than independent
+rollouts. The leverage is concentration, not variance.
+
+One limit worth stating precisely: "not a decision point" here means no action
+changed 90-frame *survival*. Two actions that both survive 90 frames can still
+leave different pile shapes and different futures. This measures where survival
+is decidable, not where the decision matters.
+
+### Process rule, third variant of the same failure
+
+The first run of this probe produced nothing: launched over ssh with `nohup ...`
+and no `&`, it died when the session was reaped, and the harness reported the
+wrapper's exit 0 as success. An hourly check reported it "still running" because
+a process was visible at the time; it was already doomed. Relaunched under
+`systemd-run --user` -- the pattern the ladder has used all along -- it completed.
+
+Remote long jobs need a supervisor that outlives the connection. `nohup` without
+`&` is not one, and an exit code from an ssh wrapper says nothing about the job
+inside it.
