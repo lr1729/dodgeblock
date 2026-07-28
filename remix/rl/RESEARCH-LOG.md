@@ -2615,3 +2615,50 @@ continuation, so a state where no single action helps but a two-action sequence
 does reads as unrescuable: the true ceiling is higher than 2.09x, not lower. And
 the continuation being the current policy means the ceiling rises as the policy
 improves -- 2.09x is the ceiling on one distillation round, not on the method.
+
+## v24 — the one-step ceiling is ~2x and does not grow with lookahead
+
+Two follow-ups to v23: a seed-3 replication, and an extension to horizon 240.
+One confirms, one corrects.
+
+    run                       horizon   hazard ratio available
+    seed-1 (stride 15)           30           1.59x
+                                 60           1.86x
+                                 90           2.09x
+    seed-3 (stride 15)           30           1.86x
+                                 60           2.24x
+                                 90           2.44x
+    seed-1 (stride 25)           30           1.35x
+                                 60           2.00x
+                                 90           1.85x
+                                240           1.87x
+
+**Replication holds.** seed-3 gives 2.44x against seed-1's 2.09x at horizon 90 --
+same direction, same order, consistent with the +/-0.05 bank spread v22 measured.
+Regret given a critical state is 0.245 (seed-1) and 0.348 (seed-3).
+
+**Correction to v23.** That entry read the rising regret rate across horizons
+30/60/90 as "regret grows with lead time, which says where the rest is", and used
+it to argue the margin prong is where the remaining gap lives. The horizon-240
+run shows the inference was wrong. What grows with horizon is the *rate* -- more
+states become critical the further out you look (0.049 -> 0.097 -> 0.153 -> 0.383).
+The quantity that matters, the hazard reduction one-step selection actually buys,
+**plateaus around 1.9x and does not improve past 60-90 frames**. Evaluating over a
+longer window reveals more decisions but does not unlock a larger win from
+choosing single actions well.
+
+That does not weaken the case for a margin objective; it removes a bad argument
+for it. The honest argument is the ceiling itself, which is now robust:
+
+    ratio 1.87x -> 0.1053 nats/layer  survival 0.9001  (2.4x short of reach-at-all, 38x of consistent)
+    ratio 2.09x -> 0.0942 nats/layer  survival 0.9101  (2.1x short,                  34x)
+    ratio 2.44x -> 0.0807 nats/layer  survival 0.9225  (1.8x short,                  29x)
+
+Across two banks and four horizons, perfect one-step action selection lands
+between 0.900 and 0.923 per layer. It never reaches the 0.9567 needed to touch 10k
+at all, and is 29-38x short of the 0.9972 the actual goal requires.
+
+One number worth sitting with: at horizon 240 -- four seconds -- the policy
+survives 0.770 and the best available single action survives 0.877. Even played
+perfectly one step at a time, this policy dies within four seconds of a saturated
+state 12% of the time. The winning demo survived 415 seconds.
