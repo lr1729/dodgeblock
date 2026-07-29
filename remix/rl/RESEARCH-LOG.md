@@ -2662,3 +2662,63 @@ One number worth sitting with: at horizon 240 -- four seconds -- the policy
 survives 0.770 and the best available single action survives 0.877. Even played
 perfectly one step at a time, this policy dies within four seconds of a saturated
 state 12% of the time. The winning demo survived 415 seconds.
+
+## v25 — 10k play is inside this policy's distribution, at K ~ 400
+
+The Tier-2 question was which of two readings holds: is 10k play in the policy's
+own distribution and merely rare (search finds it), or absent at any depth (no
+gradient estimator helps and the leverage is margin). `search-ceiling.py` settles
+it. From banked saturated states, clone into 18 lanes under bit-identical futures:
+lane 0 deterministic, lanes 1-17 independent stochastic samples. Survival by
+best-of-K, 600 probes per bank:
+
+    run           det      K1       K2       K4       K8      K17
+    seed-1 h240  0.8533  0.8223   0.8764   0.9119   0.9377   0.9567
+    seed-3 h240  0.8567  0.8645   0.9129   0.9403   0.9552   0.9683
+    seed-5 h240  0.8183  0.8152   0.8762   0.9115   0.9297   0.9400
+    h600 (10 s)  0.7467  0.7671   0.8409   0.8786   0.9055   0.9300
+
+**Reading A.** Failure follows a power law in K -- failure ~ K^-0.45 -- with R^2
+between 0.964 and 0.9998 on every run, and no plateau anywhere in range. K=1
+tracks the deterministic policy closely, so the gain is not stochasticity being
+better than the mode; it is *choosing among samples*.
+
+Extrapolated: the winning demo survived 415 s, which is 41.5 windows of 600
+frames, so a 50% chance of matching it needs per-window survival 0.9834. At
+alpha 0.45 calibrated on the h600 curve, that is **K ~ 400** stochastic rollouts
+per decision point. MCTS scale -- hundreds of simulations per move -- and two
+orders of magnitude below the 64,237 restore-rollouts go-explore needed.
+
+So the design is search-in-the-loop policy iteration: search finds the rare good
+continuation, distillation moves it into the mode, and next round's search starts
+from a better prior. The exact-restore simulator suits it and go-explore is
+existence proof that the search terminates on this game.
+
+This also reframes v23/v24. The one-step ceiling of 1.8x is not a disappointing
+bound on the project -- it is the first round of this loop measured at K=1 over
+single actions. v24 already noted the ceiling rises as the policy improves; this
+quantifies how far it can rise.
+
+### The hazard head, in the goal metric rather than the rung metric
+
+    bank      hazard-coef 0.5   control
+    seed-1        0.8084         0.8213
+    seed-3        0.7707         0.7747
+    seed-5        0.7930         0.8230
+
+Worse on all three, mean 0.7907 vs 0.8063. But the rung eval reported det 0.041
+against the control's 0.312 -- a 7.6x collapse -- while saturated per-layer
+survival moved by 0.016. The auxiliary loss wrecked fresh-start play and left
+late-game survival nearly intact. "Catastrophic" was the fresh-start metric
+talking. Still falsified (#11), still do not enable it, but the damage is
+specific, not global, and that distinction matters for reading any future
+auxiliary-loss result: a rung eval and the goal metric can disagree by 7x.
+
+### Caveats on the extrapolation
+
+K=17 is three doublings from the K~400 claim, and alpha was fitted over one
+decade. A 128-lane run out to K=127 is measuring now. If alpha holds, the number
+stands; if the curve bends, the design conclusion survives but the compute budget
+does not. Best-of-K is also a retry statistic -- a live policy gets one attempt --
+so this bounds what search *could* reach, which is the quantity that picks the
+design, not achievable survival.

@@ -130,12 +130,20 @@ def main():
                     packet = bridge.restore_slots(slots)
                     chosen = int(policy_actions(packet)[0])
 
+                    focus_ok = bool(
+                        packet['state'][0, 12] > 0 or (
+                            packet['state'][0, 10] > 0
+                            and packet['state'][0, 14] <= 0
+                            and packet['state'][0, 19] <= 0))
                     forced = np.arange(ACTIONS, dtype=np.uint8)
                     packet = bridge.step(forced)
                     alive = ~packet['dones'].astype(bool)
                     survival = {}
+                    branch_held = None
                     for step in range(1, args.horizon):
-                        actions = policy_actions(packet)
+                        if (step - 1) % interval == 0 or branch_held is None:
+                            branch_held = policy_actions(packet)
+                        actions = branch_held.copy()
                         actions[~alive] = 254
                         packet = bridge.step(actions)
                         alive &= ~packet['dones'].astype(bool)
@@ -147,6 +155,7 @@ def main():
 
                     records.append({
                         'chosen': chosen,
+                        'focus_ok': focus_ok,
                         'survival': {h: survival[h].copy() for h in horizons},
                     })
                     probes += 1
@@ -171,6 +180,17 @@ def main():
         # Critical states: not everything survives, so the action matters.
         critical = count_lives < ACTIONS
         rescuable = any_lives & ~chosen_lives
+        # Codex: forcing all 18 tests focus actions the policy may not legally
+        # pick. Actions i and i+9 share movement and differ only by a focus
+        # press, so when focus is unavailable they should be identical under
+        # common futures -- measured, not assumed.
+        legal_lives = np.array([
+            (r['survival'][horizon].any() if r['focus_ok']
+             else r['survival'][horizon][:9].any())
+            for r in records])
+        twins_agree = float(np.mean([
+            bool((r['survival'][horizon][:9] == r['survival'][horizon][9:]).all())
+            for r in records if not r['focus_ok']]))
         report[f'horizon_{horizon}'] = {
             'probes': int(len(records)),
             'policy_action_survives': round(float(chosen_lives.mean()), 4),
@@ -182,6 +202,12 @@ def main():
                 round(float(rescuable.sum() / max(1, any_lives.sum())), 4)),
             'regret_given_critical': (
                 round(float(rescuable[critical].mean()), 4) if critical.any() else None),
+            'some_LEGAL_action_survives': round(float(legal_lives.mean()), 4),
+            'hazard_ratio_all18': round(
+                float((1 - chosen_lives.mean()) / max(1e-9, 1 - any_lives.mean())), 3),
+            'hazard_ratio_legal': round(
+                float((1 - chosen_lives.mean()) / max(1e-9, 1 - legal_lives.mean())), 3),
+            'focus_unavailable_twin_agreement': round(twins_agree, 4),
         }
 
     print(json.dumps({
