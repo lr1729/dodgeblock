@@ -68,9 +68,14 @@ BATCH = 256
 LEARNING_RATE = 1e-5
 ANCHOR_COEF = 1.0
 # The collector is latency-bound on per-frame GPU round-trips, not CPU-bound
-# (measured: 42 min CPU over 115 min wall). Cap it so a slow round yields partial
-# data on schedule instead of stalling the loop indefinitely.
-COLLECT_MAX_HOURS = 5.0
+# (measured: 42 min CPU over 115 min wall). With the post-v26 fixed collector
+# and 8 workers, the observed rate is ~800-1150 samples/hour. A fixed 5h wall
+# silently turns both the base and retry rounds into similarly sized partial
+# batches, so the "retry with more samples" branch would not actually increase
+# evidence. Scale the wall with requested samples while retaining a hard cap per
+# stage so a broken collector cannot stall the loop indefinitely.
+COLLECT_HOURS_PER_8K = 10.0
+COLLECT_MIN_HOURS = 5.0
 EVAL_ENVS = 128
 EVAL_ROUNDS = 4
 
@@ -217,6 +222,10 @@ class DistillLoop:
         index = self.state['round']
         base = self.state['best_checkpoint']
         samples = RETRY_SAMPLES if self.state['retrying'] else SAMPLES
+        collect_hours = max(
+            COLLECT_MIN_HOURS,
+            COLLECT_HOURS_PER_8K * samples / SAMPLES,
+        )
         work = self.state_dir / f'round-{index}'
         work.mkdir(parents=True, exist_ok=True)
         dataset = work / 'targets.npz'
@@ -227,13 +236,18 @@ class DistillLoop:
             f'rl/search-distill-collect.py {base} --out {dataset} '
             f'--samples {samples} --lanes {LANES} --workers {WORKERS} '
             f'--horizon {HORIZON} --stride {STRIDE} --control-interval 1 '
-            f'--max-hours {COLLECT_MAX_HOURS} '
+            f'--max-hours {collect_hours:.2f} '
             f'> {work}/collect.json 2> {work}/collect.log'
         )
         if not self.run_stage(f'distill-collect-{index}', collect,
                               work / '.collect.done'):
             self.stop('NEEDS-ATTENTION', f'round {index} collect produced no marker')
             return
+        try:
+            collect_info = json.loads((work / 'collect.json').read_text())
+            actual_samples = int(collect_info.get('samples', samples))
+        except Exception:
+            actual_samples = samples
 
         train = (
             f'cd {CODE_DIR} && CUDA_VISIBLE_DEVICES=1 {PYTHON_BIN} '
@@ -277,22 +291,25 @@ class DistillLoop:
                               retrying=False)
             self.state['history'].append(
                 {'round': index, 'gain_nats': gain, 'nats': after,
-                 'fresh_mean_height': fresh, 'checkpoint': str(candidate)})
+                 'fresh_mean_height': fresh, 'checkpoint': str(candidate),
+                 'samples': actual_samples})
             self.record(
                 f'round {index}: {detail} | mean gain {gain:+.4f} nats | '
-                f'{fresh_note} → **ACCEPT** (samples={samples})')
+                f'{fresh_note} → **ACCEPT** '
+                f'(samples={actual_samples}/{samples})')
         elif not self.state['retrying']:
             self.state['retrying'] = True
             self.record(
                 f'round {index}: {detail} | mean gain {gain:+.4f} nats | '
                 f'{fresh_note} → **RETRY** at {RETRY_SAMPLES} samples (below '
-                f'{MIN_NATS_GAIN} threshold)')
+                f'{MIN_NATS_GAIN} threshold; collected '
+                f'{actual_samples}/{samples})')
         else:
             self.state['retrying'] = False
             self.record(
                 f'round {index}: {detail} | mean gain {gain:+.4f} nats | '
                 f'{fresh_note} → **PLATEAU** — two consecutive rounds below '
-                f'threshold')
+                f'threshold (collected {actual_samples}/{samples})')
             self.stop('PLATEAU', 'search distillation stopped improving; the '
                                  'ceiling curve says raise K or move to margin')
             return

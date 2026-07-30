@@ -99,10 +99,18 @@ def main():
         args.workers, args.lanes, args.seed,
         target_height=10_000, reward_mode='target', cell_banks=[args.bank],
     )
-    slots = np.zeros(total, np.int64)
+    # Slot tables live inside each env-server worker. Saving every lane to slot
+    # 0 overwrites the lead snapshot with the last branch lane in that worker.
+    # Save lane i to slot i, then restore all lanes from slot 0 so each branch
+    # search starts from the policy trajectory's lead state under common futures.
+    branch_slots = np.tile(np.arange(args.lanes, dtype=np.int64), args.workers)
+    lead_slots = np.zeros(total, np.int64)
     rng = np.random.default_rng(0)
     # Lane 0 of each worker carries the real trajectory.
     lead = np.arange(args.workers) * args.lanes
+
+    def lead_actions(actions):
+        return np.repeat(actions[lead], args.lanes).astype(np.uint8)
 
     def act(packet, deterministic_lead=False):
         observation = tensor_observation(packet_observation(packet), device)
@@ -133,14 +141,15 @@ def main():
             reset_ids = np.repeat(cells, args.lanes).astype(np.int32)
             packet = bridge.reset(reset_ids)
             held, _ = act(packet, deterministic_lead=True)
+            held = lead_actions(held)
             frame = 0
             alive_real = np.ones(args.workers, dtype=bool)
             while alive_real.any() and kept < args.samples:
                 if elapsed_hours() > args.max_hours:
                     break
                 if frame % args.stride == 0:
-                    packet = bridge.save_slots(slots)
-                    packet = bridge.restore_slots(slots)
+                    packet = bridge.save_slots(branch_slots)
+                    packet = bridge.restore_slots(lead_slots)
                     # Snapshot the DECISION state's observation now; `packet`
                     # advances through the branch rollout below and would
                     # otherwise describe a state 120 frames downstream.
@@ -214,11 +223,13 @@ def main():
                               f'{kept / max(1, kept + dropped_uniform):.3f}',
                               file=sys.stderr, flush=True)
 
-                    packet = bridge.restore_slots(slots)
+                    packet = bridge.restore_slots(lead_slots)
                     held, _ = act(packet, deterministic_lead=True)
+                    held = lead_actions(held)
 
                 if frame % interval == 0 and frame % args.stride != 0:
                     held, _ = act(packet, deterministic_lead=True)
+                    held = lead_actions(held)
                 packet = bridge.step(held)
                 alive_real &= ~packet['dones'].astype(bool)[lead]
                 frame += 1
