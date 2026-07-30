@@ -47,14 +47,42 @@ BANKS = ('seed-1', 'seed-3', 'seed-5')
 SAMPLES = 8000
 RETRY_SAMPLES = 16000
 LANES = 32
+# Measured 2026-07-29: 8 workers -> 1136 samples/h, 16 workers -> 1737 samples/h
+# while contending with a live round, so >=1.53x and a floor. The collector is
+# latency-bound on bridge round-trips, which are per-step-across-all-envs, so
+# extra trajectories harvest more contested states at nearly the same cost. Load
+# average was 2.61 of 20 cores at 8 workers. At 16 a round finishes its full
+# sample budget in ~4.6h instead of truncating on the wall guard.
+# Reverted to 8 on 2026-07-30. The 16-worker measurement was sound, but the box
+# became unreachable (sshd and all userspace dead, kernel still answering ping)
+# shortly after switching to it and had to be power-cycled. No mechanism was
+# established -- systemd cgroups should reap stage children, 16 processes on 20
+# cores should not wedge anything, and an unrelated vLLM server had already died
+# on its own beforehand. Absent a cause, run the configuration that was stable
+# for hours and revisit only after a full round completes clean.
+WORKERS = 8
 HORIZON = 120
 STRIDE = 10
 EPOCHS = 4
 BATCH = 256
 LEARNING_RATE = 1e-5
 ANCHOR_COEF = 1.0
+# The collector is latency-bound on per-frame GPU round-trips, not CPU-bound
+# (measured: 42 min CPU over 115 min wall). Cap it so a slow round yields partial
+# data on schedule instead of stalling the loop indefinitely.
+COLLECT_MAX_HOURS = 5.0
 EVAL_ENVS = 128
 EVAL_ROUNDS = 4
+
+# Distillation only ever sees saturated states, so it can improve late-game
+# survival while quietly wrecking the fresh prefix -- exactly the split the
+# hazard head showed (7.6x collapse on the rung metric, 0.016 on saturated).
+# Every accepted round is therefore also scored from fresh starts, and a large
+# regression stops the loop even if saturated survival improved.
+FRESH_TARGET = 1150
+FRESH_EPISODES = 1024
+FRESH_BASELINE_MEAN = 814.92     # the 24M control, 2048 episodes
+FRESH_REGRESSION_LIMIT = 0.80    # fraction of baseline mean height tolerated
 
 # A round must beat the base by more than bank-to-bank noise. v22 measured the
 # log-hazard spread at +/-0.017 nats across banks for a fixed policy pair, so
@@ -95,8 +123,28 @@ class DistillLoop:
         self.save()
         self.record(f'**{status}** — {reason}')
 
+    def ensure_clean(self):
+        """No stray env-servers before a stage starts.
+
+        Stage units are cgroup-scoped so systemd should reap their children, but
+        this loop lost a box to an undiagnosed resource exhaustion and the cost
+        of being wrong here is another power cycle. Cheap, idempotent, and it
+        makes the assumption checkable instead of assumed.
+        """
+        probe = subprocess.run(
+            ['pgrep', '-c', '-f', 'env-server-v2[.]mjs'],
+            capture_output=True, text=True,
+        )
+        stray = int(probe.stdout.strip() or 0)
+        if stray:
+            self.record(f'found {stray} stray env-server processes before a '
+                        f'stage; killing them')
+            subprocess.run(['pkill', '-f', 'env-server-v2[.]mjs'], check=False)
+            time.sleep(10)
+
     def run_stage(self, unit, command, marker):
         """Run one stage to completion, detected by its marker file."""
+        self.ensure_clean()
         marker = Path(marker)
         if marker.exists():
             marker.unlink()
@@ -105,13 +153,20 @@ class DistillLoop:
              '/usr/bin/bash', '-lc', f'{command} && touch {marker}'],
             capture_output=True, text=True, check=False,
         )
+        # systemd-run returns before the unit is fully up, so a unit that reads
+        # 'activating' is alive, not failed. Treating anything != 'active' as
+        # failure would abort every round in its first second.
+        alive = {'active', 'activating', 'reloading', 'deactivating'}
+        time.sleep(10)
         while not marker.exists():
             probe = subprocess.run(
                 ['systemctl', '--user', 'is-active', unit],
                 capture_output=True, text=True,
             )
-            if probe.stdout.strip() != 'active' and not marker.exists():
-                time.sleep(5)
+            if probe.stdout.strip() not in alive:
+                # Unit is gone. Give the filesystem a moment for the marker the
+                # command may have written just before exiting, then report.
+                time.sleep(10)
                 return marker.exists()
             time.sleep(POLL_SECONDS)
         return True
@@ -142,6 +197,22 @@ class DistillLoop:
             nats[bank] = -math.log(survival)
         return nats
 
+    def fresh_eval(self, checkpoint, tag):
+        """Mean height from fresh starts; guards the prefix distillation ignores."""
+        out = self.state_dir / f'{tag}-fresh.json'
+        unit = f'distill-fresh-{tag}'.replace('_', '-')
+        command = (
+            f'cd {CODE_DIR} && CUDA_VISIBLE_DEVICES=1 {PYTHON_BIN} '
+            f'rl/evaluate_ppo_v2.py {checkpoint} --episodes {FRESH_EPISODES} '
+            f'--target-height {FRESH_TARGET} --control-interval 1 > {out}'
+        )
+        if not self.run_stage(unit, command, self.state_dir / f'.{unit}.done'):
+            return None
+        try:
+            return float(json.loads(out.read_text())['mean_height'])
+        except Exception:
+            return None
+
     def round(self):
         index = self.state['round']
         base = self.state['best_checkpoint']
@@ -154,9 +225,10 @@ class DistillLoop:
         collect = (
             f'cd {CODE_DIR} && CUDA_VISIBLE_DEVICES=1 {PYTHON_BIN} '
             f'rl/search-distill-collect.py {base} --out {dataset} '
-            f'--samples {samples} --lanes {LANES} --workers 8 '
+            f'--samples {samples} --lanes {LANES} --workers {WORKERS} '
             f'--horizon {HORIZON} --stride {STRIDE} --control-interval 1 '
-            f'> {work}/collect.json'
+            f'--max-hours {COLLECT_MAX_HOURS} '
+            f'> {work}/collect.json 2> {work}/collect.log'
         )
         if not self.run_stage(f'distill-collect-{index}', collect,
                               work / '.collect.done'):
@@ -184,27 +256,43 @@ class DistillLoop:
         detail = ' '.join(
             f'{b}:{math.exp(-after[b]):.4f}' for b in BANKS)
 
+        fresh = self.fresh_eval(candidate, f'round-{index}')
+        fresh_note = 'fresh=n/a'
+        if fresh is not None:
+            fresh_note = f'fresh={fresh:.1f} ({fresh / FRESH_BASELINE_MEAN:.2f}x base)'
+
         self.state['round'] += 1
+        if (fresh is not None
+                and fresh < FRESH_REGRESSION_LIMIT * FRESH_BASELINE_MEAN):
+            self.record(
+                f'round {index}: {detail} | mean gain {gain:+.4f} nats | '
+                f'{fresh_note} → **REJECT** (fresh prefix regressed past '
+                f'{FRESH_REGRESSION_LIMIT:.0%} of baseline)')
+            self.stop('FRESH-REGRESSION',
+                      'distillation improved saturated survival while damaging '
+                      'fresh play; needs a prefix term or mixed-state targets')
+            return
         if gain >= MIN_NATS_GAIN:
             self.state.update(best_checkpoint=str(candidate), best_nats=after,
                               retrying=False)
             self.state['history'].append(
                 {'round': index, 'gain_nats': gain, 'nats': after,
-                 'checkpoint': str(candidate)})
+                 'fresh_mean_height': fresh, 'checkpoint': str(candidate)})
             self.record(
-                f'round {index}: {detail} | mean gain {gain:+.4f} nats '
-                f'→ **ACCEPT** (samples={samples})')
+                f'round {index}: {detail} | mean gain {gain:+.4f} nats | '
+                f'{fresh_note} → **ACCEPT** (samples={samples})')
         elif not self.state['retrying']:
             self.state['retrying'] = True
             self.record(
-                f'round {index}: {detail} | mean gain {gain:+.4f} nats '
-                f'→ **RETRY** at {RETRY_SAMPLES} samples (below '
+                f'round {index}: {detail} | mean gain {gain:+.4f} nats | '
+                f'{fresh_note} → **RETRY** at {RETRY_SAMPLES} samples (below '
                 f'{MIN_NATS_GAIN} threshold)')
         else:
             self.state['retrying'] = False
             self.record(
-                f'round {index}: {detail} | mean gain {gain:+.4f} nats '
-                f'→ **PLATEAU** — two consecutive rounds below threshold')
+                f'round {index}: {detail} | mean gain {gain:+.4f} nats | '
+                f'{fresh_note} → **PLATEAU** — two consecutive rounds below '
+                f'threshold')
             self.stop('PLATEAU', 'search distillation stopped improving; the '
                                  'ceiling curve says raise K or move to margin')
             return

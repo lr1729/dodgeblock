@@ -33,6 +33,8 @@ Writes a .npz of observations, soft targets, and diagnostics.
 import argparse
 import gzip
 import json
+import sys
+import time
 
 import numpy as np
 import torch
@@ -44,6 +46,7 @@ from ppo_v2 import (
     STICKY_MODEL_ARCHITECTURE,
     StickyActorCriticNetwork,
     load_agent_state,
+    focus_action_mask,
     packet_observation,
     tensor_observation,
 )
@@ -69,6 +72,10 @@ def main():
     parser.add_argument('--seed', type=int, default=0xD157_111)
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--control-interval', type=int, default=0)
+    parser.add_argument('--max-hours', type=float, default=6.0,
+                        help='stop and write what has been collected; a silent '
+                             'run that never finishes is worse than a short one')
+    parser.add_argument('--progress-every', type=int, default=250)
     args = parser.parse_args()
 
     with gzip.open(args.bank) as handle:
@@ -112,10 +119,16 @@ def main():
         return sampled, observation
 
     observations, targets, spreads = [], [], []
-    kept = dropped_uniform = 0
+    kept = dropped_uniform = dropped_illegal_rows = 0
+    illegal_mass = 0.0
+    started = time.monotonic()
+    last_report = 0
+
+    def elapsed_hours():
+        return (time.monotonic() - started) / 3600.0
 
     try:
-        while kept < args.samples:
+        while kept < args.samples and elapsed_hours() <= args.max_hours:
             cells = rng.choice(pool, size=args.workers)
             reset_ids = np.repeat(cells, args.lanes).astype(np.int32)
             packet = bridge.reset(reset_ids)
@@ -123,6 +136,8 @@ def main():
             frame = 0
             alive_real = np.ones(args.workers, dtype=bool)
             while alive_real.any() and kept < args.samples:
+                if elapsed_hours() > args.max_hours:
+                    break
                 if frame % args.stride == 0:
                     packet = bridge.save_slots(slots)
                     packet = bridge.restore_slots(slots)
@@ -133,6 +148,14 @@ def main():
                         key: value.copy()
                         for key, value in packet_observation(packet).items()
                     }
+                    decision_tensor = tensor_observation(decision_observation, device)
+                    with torch.inference_mode():
+                        focus_ok = focus_action_mask(decision_tensor)[..., 1]
+                    focus_ok = focus_ok.cpu().numpy()
+                    legal_actions = np.ones((args.workers, ACTIONS), bool)
+                    for w in range(args.workers):
+                        legal_actions[w, 9:] = bool(focus_ok[w * args.lanes])
+
                     first, _ = act(packet)
                     packet = bridge.step(first)
                     alive = ~packet['dones'].astype(bool)
@@ -158,6 +181,19 @@ def main():
                         counts = np.bincount(
                             first[block][survived], minlength=ACTIONS
                         ).astype(np.float32)
+                        # Codex: the generator should not emit mass the policy
+                        # cannot legally place. Drop illegal actions here rather
+                        # than leaving it to the trainer's guard, and count the
+                        # disagreements so the cause stays visible instead of
+                        # being silently absorbed.
+                        illegal = counts * (~legal_actions[worker])
+                        if illegal.sum() > 0:
+                            dropped_illegal_rows += 1
+                            illegal_mass += float(illegal.sum() / counts.sum())
+                            counts = counts * legal_actions[worker]
+                        if counts.sum() <= 0:
+                            dropped_uniform += 1
+                            continue
                         target = counts / counts.sum()
                         observations.append({
                             key: value[lo].copy()
@@ -166,6 +202,17 @@ def main():
                         targets.append(target)
                         spreads.append(float(survived.mean()))
                         kept += 1
+
+                    if kept - last_report >= args.progress_every:
+                        last_report = kept
+                        rate = kept / max(1e-9, elapsed_hours())
+                        remaining = (args.samples - kept) / max(1e-9, rate)
+                        print(f'[collect] {kept}/{args.samples} samples '
+                              f'{elapsed_hours():.2f}h elapsed '
+                              f'{rate:.0f}/h eta {remaining:.2f}h '
+                              f'decision_frac '
+                              f'{kept / max(1, kept + dropped_uniform):.3f}',
+                              file=sys.stderr, flush=True)
 
                     packet = bridge.restore_slots(slots)
                     held, _ = act(packet, deterministic_lead=True)
@@ -195,6 +242,12 @@ def main():
         'dropped_unanimous': dropped_uniform,
         'decision_fraction': round(kept / max(1, kept + dropped_uniform), 4),
         'mean_branch_survival': round(float(np.mean(spreads)), 4),
+        'hours': round(elapsed_hours(), 3),
+        'hit_time_limit': elapsed_hours() > args.max_hours,
+        'rows_with_illegal_mass': dropped_illegal_rows,
+        'mean_illegal_mass_when_present': (
+            round(illegal_mass / dropped_illegal_rows, 4)
+            if dropped_illegal_rows else 0.0),
         'lanes_K': args.lanes,
         'horizon': args.horizon,
         'control_interval': interval,
