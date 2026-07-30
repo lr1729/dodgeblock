@@ -2801,3 +2801,116 @@ until 19:40, because every round to that point had been launched by hand. Three
 failures this project has now had -- self-matching pgrep, nohup without &, and no
 successor queued -- are all the same failure: relying on something other than a
 supervisor to start the next piece of work.
+
+## v27 — the loop's second round is a null, and the gate could never have seen it
+
+### The measurement the loop should have started with
+
+Round 1 of the unattended loop returned mean gain -0.0071 nats over three banks
+against a 0.008 threshold, which the driver correctly refused. Before spending
+150 h of budget on that gate, measure what it rests on: the same base and
+candidate over eight banks, plus the base re-run under a second eval seed.
+
+    bank      base      cand      delta
+    seed-1   0.18573   0.17471   -0.01102
+    seed-2   0.27536   0.28382   +0.00846
+    seed-3   0.20395   0.22027   +0.01632
+    seed-4   0.23775   0.22202   -0.01573
+    seed-5   0.17769   0.19371   +0.01601
+    seed-6   0.30925   0.29612   -0.01313
+    seed-7   0.52037   0.53717   +0.01680
+    seed-8   0.26775   0.26305   -0.00469
+
+    mean +0.00163  sd 0.01424  se 0.00503   (positive = worse)
+    gain -0.0016 nats, 0.32 SE from zero, 95% CI [-0.0115, +0.0082]
+
+**A round of 8000 targets at K=32 does not measurably improve saturated
+survival.** The interval excludes gains above +0.0082 nats, so even the
+optimistic tail needs 17.7 rounds to cover the 0.1449 nats between here and the
+threshold for reaching 10k at all. Four banks of the eight moved the wrong way.
+
+### The gate was set below its own standard error
+
+`MIN_NATS_GAIN = 0.008` came from v22's +/-0.017 bank spread by taking "half
+that". Half a standard deviation is not a detection threshold. The SE of a
+three-bank mean is 0.0142/sqrt(3) = 0.0082, so the gate sat at 0.98 SE and would
+have accepted and rejected at close to chance for the whole week. Sizing a
+threshold requires dividing by sqrt(n) and multiplying by the SE multiple you
+want, and neither step was done.
+
+    banks    SE of mean    detects at 2 SE
+      3       0.00822         0.0164
+      8       0.00503         0.0101
+     16       0.00356         0.0071
+
+### Common random numbers are worth 4.7x here, which inverts the noise model
+
+Re-running the *same* checkpoint on the same bank under a different eval seed
+moves the answer far more than swapping the checkpoint does:
+
+    same checkpoint, different eval seed (n=4):  sd 0.03086
+    different checkpoint, same eval seed (n=8):  sd 0.01424
+
+The eval is fully deterministic given (checkpoint, bank, seed) -- `base-seed-1`
+reproduced 0.8305 and `base-seed-3` reproduced 0.8155 to four places against
+values stored a day earlier. So the second column is not measuring less noise,
+it is measuring the *paired* difference: base and candidate draw the same cells
+and the same futures, and nearly all of the sampling noise cancels. Variance
+reduction (0.03086/0.01424)^2 = 4.7x, close to the 3.5x measured for paired
+advantages in v21.
+
+This retires the model that bank-to-bank heterogeneity dominates. It does not,
+because the comparison is within-bank. (An earlier decomposition subtracting the
+unpaired variance from the paired one is meaningless and is recorded here only
+so the number is not reused.) The practical consequence: **more banks is the
+only lever on gate precision, and more episodes per bank buys much less than the
+unpaired spread suggests.**
+
+### Two collector defects, and the result that motivated the loop predates the fix
+
+Comparing the repo against what was running found two fixes that existed only on
+the training box, written at 02:34 and 02:39 on 2026-07-30 and never committed.
+
+The collector saved every branch lane to slot 0. Slot tables are per worker, so
+the last lane overwrote the lead snapshot and all 32 branches restored from that
+lane's state rather than the decision state -- and because lead actions were
+also taken per-lane instead of replicated, the lanes had already diverged by the
+time of the save. The target was therefore "observation at state X, which action
+survives from state Y" with X != Y. The wall guard was separately a fixed 5 h,
+which truncated the 8000-sample round and the 16000-sample retry to the same
+partial batch, making the retry branch -- whose only purpose is adding evidence
+-- a no-op.
+
+    collector fixed        2026-07-30 02:39:57
+    loop round 1 collect   2026-07-30 02:40:33   fixed code
+    round1.pt built        2026-07-29 08:47      buggy code
+
+**The -0.0265 nats that motivated this entire design was produced by the buggy
+collector; the first round run on corrected code is the null above.**
+
+### Re-scoring v26, and what it leaves standing
+
+v26 reported the manual round as "positive on every bank" without an interval.
+Scored against the paired SD measured here, -0.0265 on three banks is 3.2 SE --
+probably real. Scored against its own three points it is t=2.12 on 2 df, which
+is not significant. The first number is the better estimate because the SD comes
+from eight paired observations rather than three.
+
+So the likely reading is not that the fix broke the mechanism. The mislabeled
+target should have been strictly worse, not better. It is that **round one on a
+never-distilled policy bought 0.0265 nats and round two on the distilled policy
+bought nothing measurable** -- sharp diminishing returns within a single K.
+
+That is a coherent story with the search-ceiling result rather than a
+contradiction of it. Best-of-K climbs monotonically to K=127 with no plateau, so
+better actions demonstrably exist. The policy has absorbed what K=32 search can
+show it and has not absorbed what K=128 can. If that reading is right, the lever
+is search strength per decision, not more rounds, more samples, or a better gate
+-- and the gate was never going to reveal that, because at 0.98 SE it could not
+tell a null from a hit either way.
+
+### Registered before the measurement
+
+If a round at K=128 also returns a null at n=8 banks, then per-decision search
+strength is not the binding constraint and the target itself is wrong -- next
+would be option-level continuations or margin training, not larger K.
