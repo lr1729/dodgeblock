@@ -306,3 +306,90 @@ diagnostics into a reward:
 node rl/audit-demo-trajectories.mjs \
   ~/dodgeblock-go-explore-bank-v4/seed-*/demo-*.json.gz
 ```
+
+## Search-in-the-loop policy iteration
+
+The sections above are kept as a record of what did not work. V5 asked a policy
+to imitate a search whose competence lived in snapshot retries rather than in
+its action choices, so there was nothing state-dependent to clone. Reward
+shaping failed for a separate reason recorded in the log: at gamma=1 a potential
+telescopes to a constant, and the interventions that survived that objection
+still added information to the reward at states where the GAE estimator
+discarded it.
+
+The current design adds no reward terms and no human data. It generates an
+action-conditioned training signal by searching from the policy's own decision
+states, then distils that signal back into the policy.
+
+The unit of progress is **per-layer survival in the saturated regime**, not
+score or episode length. Reaching 10,000 at all needs 0.9567 per layer;
+reaching it consistently needs 0.9972. Because survival composes multiplicatively
+over ~250 layers, the quantity to add up is log-hazard in nats, and every
+comparison below is in nats.
+
+Difficulty is a function of elapsed time and saturates after ~240 s, and a fresh
+policy dies long before then, so saturated survival cannot be measured from
+fresh starts. Start from the Go-Explore banks instead, which hold 512 verified
+snapshots per seed with a median start of 309 s:
+
+```bash
+python rl/saturated-hazard.py CHECKPOINT \
+  --bank ~/dodgeblock-go-explore-bank-v4/seed-1/search-checkpoint.json.gz \
+  --control-interval 1 --envs 128 --rounds 4
+```
+
+This is deterministic given (checkpoint, bank, seed), so re-running it verifies
+rather than resamples. Two consequences matter for any comparison built on it.
+Evaluating the same checkpoint under a different `--seed` moves the answer by an
+SD of 0.031 nats, while evaluating a *different* checkpoint under the same seed
+moves it by 0.014 -- the second is smaller because base and candidate draw the
+same cells and the same futures and most of the sampling noise cancels. That
+pairing is worth 4.7x, and it decays as the two policies diverge, so a paired SD
+measured on near-identical checkpoints understates the noise between checkpoints
+that genuinely differ. Bank count, not episodes per bank, is the lever on
+precision: the SE of a mean over n banks is 0.0142/sqrt(n).
+
+Collection branches K lanes from each decision state under common random
+numbers, rolls every lane forward under the policy, and records which first
+actions survived:
+
+```bash
+python rl/search-distill-collect.py CHECKPOINT \
+  --out targets.npz --samples 8000 --lanes 32 --workers 8 \
+  --horizon 120 --stride 10 --control-interval 1 --max-hours 10
+```
+
+States where every lane lives or every lane dies are dropped -- a unanimous
+verdict teaches nothing -- and `decision_fraction` in the output reports how
+many survived that filter. It rises with K (0.309 at 32 lanes, 0.592 at 128)
+while raw throughput falls, so larger K buys better-estimated targets from a
+larger share of visited states at roughly 1.5x the cost per usable sample.
+
+The target is the survival-weighted distribution over first actions, which makes
+this a soft one-step improvement operator rather than best-of-K selection: the
+new policy is proportional to the old one reweighted by each action's measured
+survival. Training fits it with cross-entropy under a KL anchor to the frozen
+source, because the targets only cover states where branches disagreed and the
+anchor is what holds the rest of the policy in place:
+
+```bash
+python rl/search-distill-train.py CHECKPOINT targets.npz \
+  --out distilled.pt --epochs 8 --batch 256 \
+  --learning-rate 1e-4 --anchor-coef 1.0
+```
+
+**Check `anchor_kl` in the output before interpreting any evaluation of the
+result.** It reports how far the update actually moved the policy, and a run
+that lands far below the 0.01-0.05 nats of a normal trust region has not tested
+the targets at all -- it has produced an unchanged policy, which evaluates as a
+null no matter what the targets contain. The defaults above are calibrated to
+land inside that range on 8000 samples; `--learning-rate 1e-5 --anchor-coef 1.0
+--epochs 4` reaches 0.001 and is a no-op.
+
+`distill_driver.py` runs the loop unattended under systemd, chaining stages on
+file markers. Two rules it enforces are worth stating because both were learned
+by getting them wrong. A round is accepted on the mean over many banks rather
+than one, since absolute survival swings 0.1 between banks while the paired
+difference is stable. And the accept threshold is sized as a multiple of the SE
+of that mean -- dividing the bank spread by sqrt(n) and multiplying by the
+number of standard errors required -- not as a fraction of the spread itself.
