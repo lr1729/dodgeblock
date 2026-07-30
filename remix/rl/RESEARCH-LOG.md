@@ -2722,3 +2722,82 @@ stands; if the curve bends, the design conclusion survives but the compute budge
 does not. Best-of-K is also a retry statistic -- a live policy gets one attempt --
 so this bounds what search *could* reach, which is the quantity that picks the
 design, not achievable survival.
+
+## v26 — the loop works, and v25's K estimate was 17x too optimistic
+
+### Round one moved the goal metric
+
+First search-distillation round: 8000 targets at K=32, horizon 120, distilled with
+a KL anchor to the source policy, evaluated bank-for-bank.
+
+    bank      base      round 1    delta      nats
+    seed-1   0.8213     0.8305    +0.0092   -0.0111
+    seed-3   0.7747     0.8155    +0.0408   -0.0513
+    seed-5   0.8230     0.8372    +0.0142   -0.0171
+    mean log-hazard 0.2156 -> 0.1891, **-0.0265 nats/layer**
+
+Positive on every bank. For scale, the entire 96M-frame ladder bought 0.109 nats,
+so one round of a few hours bought roughly a quarter of that. This is the first
+intervention since the ladder to move saturated survival at all, and the first
+ever to do it without more environment frames.
+
+It also retires the worry that this is the BC that failed in v5. It is not: those
+targets came from a state-independent search, these come from searching over the
+current policy at states it actually visits.
+
+### The extrapolation was wrong
+
+v25 fitted failure ~ K^-0.45 over K <= 17 and extrapolated K ~ 400 rollouts per
+decision to sustain the demo's 415 seconds. Running to K = 127 at 128 lanes shows
+the exponent decays as K grows:
+
+    horizon   alpha over K<=17   alpha over K<=127
+      240          0.415              0.376
+      600          (n/a)              0.337
+       90          --                 0.311
+       30          --                 0.283
+
+Recalibrated on the h600 curve at K=127 (failure 0.0633) with alpha 0.337, the
+requirement becomes **K ~ 6,800**, not 400. Seventeen times worse, and alpha is
+still falling, so 6,800 is itself optimistic -- the honest reading is that it
+approaches go-explore's measured 64,237 restore-rollouts.
+
+The design conclusion survives: best-of-K rises monotonically with no plateau
+anywhere out to K=127, so 10k play is genuinely inside this distribution. What
+does not survive is "MCTS scale, two orders of magnitude cheaper than go-explore".
+Pure search at inference is not affordable. Fitting a power law over one decade
+and extrapolating two was the error; the fit had R^2 of 0.9998 and was still
+wrong, which is worth remembering the next time a clean fit invites extrapolation.
+
+### Why that does not sink the loop -- and the measurement that says so
+
+Search cost per decision only matters if search must do all the work in one shot.
+The loop does not: each round moves found behaviour into the mode, so the K needed
+falls every round. The relevant question is whether the search advantage persists
+as the policy improves, and it does:
+
+    checkpoint      det       best-of-16   ratio
+    rung-600-x0    0.7960      0.9390      3.34x
+    rung-700-x4    0.8420      0.9531      3.37x
+    rung-850-x8    0.8900      0.9798      5.45x
+
+The policy improved from 0.796 to 0.890 deterministic across those rungs, and the
+hazard ratio search buys did not shrink -- it grew. Search keeps finding headroom
+at every level of competence measured. That is the property compounding needs, and
+it is the strongest single argument for the design.
+
+### Unattended from here
+
+`distill_driver.py` now runs the loop: collect, distil, evaluate on three banks,
+accept if mean log-hazard improves by >= 0.008 nats, retry once at double samples,
+stop on two consecutive misses. Gating on the mean in nats because v22 measured
+absolute survival swinging 0.10 between banks while the log-hazard difference is
+stable to +/-0.017 -- a single-bank gate reads bank difficulty, not progress.
+Budget 40 rounds / 168 hours. Stages run under systemd-run and chain on file
+markers.
+
+That last part is not incidental. Round 1 landed at 08:47 and the GPU sat idle
+until 19:40, because every round to that point had been launched by hand. Three
+failures this project has now had -- self-matching pgrep, nohup without &, and no
+successor queued -- are all the same failure: relying on something other than a
+supervisor to start the next piece of work.
