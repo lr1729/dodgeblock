@@ -2891,26 +2891,53 @@ collector; the first round run on corrected code is the null above.**
 ### Re-scoring v26, and what it leaves standing
 
 v26 reported the manual round as "positive on every bank" without an interval.
-Scored against the paired SD measured here, -0.0265 on three banks is 3.2 SE --
-probably real. Scored against its own three points it is t=2.12 on 2 df, which
-is not significant. The first number is the better estimate because the SD comes
-from eight paired observations rather than three.
+It is underpowered either way and should not be leaned on. Against its own three
+points, -0.0265 is t=2.12 on 2 df, p~0.17. Against the paired SD measured here
+it is 3.2 SE -- but that SD came from a pair differing by 0.001 nats of KL, and
+common random numbers pair *less* well as two policies diverge, so 0.01424
+understates the noise for any pair that actually differs. Its own scatter,
+0.0217, is larger than the borrowed one in exactly that direction. **Neither
+number settles it, and the honest statement is that the result that motivated
+this design was never significant.**
 
-So the likely reading is not that the fix broke the mechanism. The mislabeled
-target should have been strictly worse, not better. It is that **round one on a
-never-distilled policy bought 0.0265 nats and round two on the distilled policy
-bought nothing measurable** -- sharp diminishing returns within a single K.
+### The update was a no-op, so nothing yet has tested the mechanism
 
-That is a coherent story with the search-ceiling result rather than a
-contradiction of it. Best-of-K climbs monotonically to K=127 with no plateau, so
-better actions demonstrably exist. The policy has absorbed what K=32 search can
-show it and has not absorbed what K=128 can. If that reading is right, the lever
-is search strength per decision, not more rounds, more samples, or a better gate
--- and the gate was never going to reveal that, because at 0.98 SE it could not
-tell a null from a hit either way.
+    epoch 1   distil_ce 1.0697   anchor_kl 0.00040
+    epoch 3   distil_ce 1.0646   anchor_kl 0.00095
+
+The distilled policy ends 0.001 nats of KL from its parent. That is not a small
+effect, it is no effect: PPO trust regions run 0.01-0.05 nats per update, so the
+step was ~30x below the bottom of the usual range, and cross-entropy fell 0.005
+over four epochs against a target it started at 1.07 on. lr 1e-5 with
+`ANCHOR_COEF = 1.0` over 124 optimiser steps did not move the policy.
+
+**A null is precisely what an unchanged policy produces.** So the loop's round 1
+does not show that search targets lack signal; it shows the optimiser never
+applied them. Combined with the paragraph above -- the one encouraging result
+being non-significant, at the same hyperparameters and so presumably the same
+0.001 KL -- the simplest reading is that **no round has yet changed the policy
+enough to test anything.** Diminishing returns at K=32, the reading this entry
+first reached for, requires round one to have worked, and that is not
+established.
+
+This also disposes of the open item from v26. `rows_with_illegal_mass` is 0 with
+the corrected collector, where the buggy one put target mass on masked focus
+actions in ~2% of rows. The cause was the slot defect: the focus mask came from
+the decision-state observation while the branches ran from a different state, so
+the mask and the available actions genuinely disagreed. Fixing the state fixed
+the mask.
 
 ### Registered before the measurement
 
-If a round at K=128 also returns a null at n=8 banks, then per-decision search
-strength is not the binding constraint and the target itself is wrong -- next
-would be option-level continuations or margin training, not larger K.
+The targets from the corrected collector already exist, so step size can be
+calibrated for the cost of training alone -- no collection. Training a ladder at
+lr 1e-4 to 1e-3 and anchor 1.0 down to 0, then evaluating only the arms that
+reach 0.01-0.05 nats of KL.
+
+Prediction: an arm that reaches a real trust region moves saturated survival
+measurably in one direction or the other. If arms spanning 0.01-0.05 KL all land
+inside +/-0.005 nats at n=8, the targets carry no usable signal and the problem
+is the target, not the step size or K -- next would be option-level
+continuations or margin training. If instead the policy moves and gets *worse*
+as KL grows, the target is actively mis-specified, which is a different and more
+interesting failure than either.
