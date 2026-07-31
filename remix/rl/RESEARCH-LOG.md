@@ -2941,3 +2941,89 @@ is the target, not the step size or K -- next would be option-level
 continuations or margin training. If instead the policy moves and gets *worse*
 as KL grows, the target is actively mis-specified, which is a different and more
 interesting failure than either.
+
+## v28 — a real step size, and the held-out half that killed the better-looking arm
+
+### The ladder, evaluated
+
+Four step sizes on the same fixed targets from the corrected collector, so the
+only variable is how far the optimiser moved. Gain is against `round1.pt`,
+positive is better, eight banks:
+
+    arm         lr / anchor      KL       gain       SE      z
+    round-1     1e-5 / 1.0    0.00095  -0.00163  0.00503  -0.32
+    a           1e-4 / 1.0    0.01573  +0.00674  0.00437  +1.54
+    b           3e-4 / 0.3    0.05378  +0.00939  0.00812  +1.16
+    d           3e-4 / 0.0    0.09169  +0.01031  0.01067  +0.97
+
+Monotone in KL, with the only negative arm being the one that did not move. Note
+the SE grows with KL as well: larger steps diverge further from the base, common
+random numbers cancel less, and the biggest effect is therefore the hardest to
+see. That was predicted earlier in v27 from the pairing argument and holds here.
+
+### Banks 9-16 reversed the arm that led on banks 1-8
+
+    arm   set          n     gain       SE      z    banks better
+    a     select 1-8   8  +0.00674  0.00437  +1.54     4/8
+    a     HELD 9-16    8  -0.00867  0.00748  -1.16     4/8
+    a     pooled      16  -0.00097  0.00464  -0.21    8/16
+
+    b     select 1-8   8  +0.00939  0.00812  +1.16     6/8
+    b     HELD 9-16    8  +0.00669  0.00783  +0.85     4/8
+    b     pooled      16  +0.00804  0.00546  +1.47   10/16
+
+**Arm a had the best z on the selection set and reversed sign on data it had not
+been chosen against.** Promoting on the selection set alone would have restarted
+the loop on a dead arm, and the per-round gain quoted for it would have been
+about twice the truth. Arm b held its sign across two independent halves, which
+is modest evidence and still short of 2 SE at n=16.
+
+The lesson is not subtle and cost nothing to apply: with three arms and a noisy
+estimator, the best-looking arm is partly selected for noise, so reserve half the
+banks before training anything.
+
+### The fresh-start gate was scored against the wrong lineage
+
+`FRESH_BASELINE_MEAN = 814.92` is the 24M control. `round1.pt` itself scores
+**751.8, CI [730.7, 774.2]**. Every candidate all week was measured against a
+policy it is not descended from, which is why a no-op update sitting 0.001 nats
+from its parent appeared to "regress to 0.94x". All three arms land inside that
+CI (751.5 / 767.9 / 758.4), so a real step does not damage the prefix and the
+fear that motivated `ANCHOR_COEF = 1.0` is not supported.
+
+### Where this actually leaves the goal
+
+Sixteen-bank base: **0.28403 nats** (survival 0.7527), not the 0.189 the
+three-bank set suggested -- the wider set is the better estimate and it is worse.
+The threshold for reaching 10k at all is 0.04427, so the deficit is **0.2398
+nats**. At arm b's +0.008/round that is 30 rounds, and it assumes no decay, which
+nothing supports and which this project has seen fail before.
+
+### The loop, rebuilt around what can be measured
+
+One round moves ~+0.008 against SE 0.0055. A per-round gate strict enough to
+mean anything rejects most genuine rounds; one loose enough to pass them accepts
+noise. So rounds are now adopted unverified and **blocks of four are gated at
+0.016 nats over sixteen banks** -- roughly 4x the effect against the same
+measurement, and a quarter of the eval cost. A failed block rolls back to the
+last verified checkpoint; two failed blocks stop the loop.
+
+Running from 17:00 at lr 3e-4 / anchor 0.3 / 8 epochs, 16 collector workers,
+K=32. The head starts at arm b so its collection is not redone, but the verified
+baseline stays `round1.pt`, because promoting a +1.47 SE result to be the bar the
+next block must clear is how a loop ratchets against its own noise.
+
+K stays at 32 deliberately. The K probe says 128 lanes nearly doubles the share
+of states with a non-unanimous verdict (0.592 vs 0.309) at ~1.5x the cost per
+usable sample, and the targets would be estimated from 4x the branches, so it is
+the obvious next lever -- but step size is the change with evidence behind it and
+moving both at once makes the block unreadable.
+
+### Registered before block 1
+
+Block 1 is four rounds against a 0.016 gate. If it promotes, the mechanism
+compounds and the remaining budget is roughly enough. If it lands near +0.008 --
+one round's worth of gain spread over four rounds -- then distillation converges
+within a round rather than compounding, and larger K is the next test rather than
+more rounds. If it lands at or below zero, arm b was noise too and the target
+itself is wrong.

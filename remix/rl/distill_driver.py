@@ -42,7 +42,14 @@ from pathlib import Path
 CODE_DIR = Path.home() / 'dodgeblock-v5-code'
 PYTHON_BIN = Path.home() / 'envs/dodgeblock-rl/bin/python'
 BANK_DIR = Path.home() / 'dodgeblock-go-explore-bank-v4'
-BANKS = ('seed-1', 'seed-3', 'seed-5')
+# All sixteen. The paired per-bank SD is 0.0142 nats, so the SE of the mean is
+# 0.0142/sqrt(n) -- 0.0082 at three banks, 0.0036 at sixteen. A three-bank gate
+# could not resolve any effect this loop is capable of producing. Bank count is
+# the only lever that matters here: re-running a bank under a different eval seed
+# moves it by 0.031, but base and candidate share cells and futures under the
+# same seed, so the paired difference is already 4.7x quieter and more episodes
+# per bank buy far less than the unpaired spread suggests.
+BANKS = tuple(f'seed-{index}' for index in range(1, 17))
 
 SAMPLES = 8000
 RETRY_SAMPLES = 16000
@@ -53,20 +60,37 @@ LANES = 32
 # extra trajectories harvest more contested states at nearly the same cost. Load
 # average was 2.61 of 20 cores at 8 workers. At 16 a round finishes its full
 # sample budget in ~4.6h instead of truncating on the wall guard.
-# Reverted to 8 on 2026-07-30. The 16-worker measurement was sound, but the box
-# became unreachable (sshd and all userspace dead, kernel still answering ping)
-# shortly after switching to it and had to be power-cycled. No mechanism was
-# established -- systemd cgroups should reap stage children, 16 processes on 20
-# cores should not wedge anything, and an unrelated vLLM server had already died
-# on its own beforehand. Absent a cause, run the configuration that was stable
-# for hours and revisit only after a full round completes clean.
-WORKERS = 8
+# Reverted to 8 on 2026-07-30 after the box became unreachable (sshd and all
+# userspace dead, kernel still answering ping) shortly after a switch to 16 and
+# had to be power-cycled. No mechanism was ever established -- systemd cgroups
+# should reap stage children, 16 processes on 20 cores should not wedge
+# anything, and an unrelated vLLM server had already died on its own beforehand.
+# The condition set then was to revisit once a full round completed clean, and
+# one has: round 1 ran collect, train and eval end to end, followed by ~7 h of
+# continuous eval sweeps at load 2-5 of 20 cores with no incident. Restored to 16
+# because a block is 4 rounds and the difference is 4 blocks in the remaining
+# budget rather than 7. `ensure_clean` now runs before every stage.
+WORKERS = 16
 HORIZON = 120
 STRIDE = 10
-EPOCHS = 4
+# Calibrated 2026-07-30 against the achieved KL, not guessed. The previous
+# settings (1e-5, anchor 1.0, 4 epochs) ended 0.00095 nats from the source
+# policy -- roughly 30x below the bottom of a normal trust region -- so the round
+# they produced was a no-op and its null said nothing about the targets. A
+# ladder on fixed targets reached 0.0157 / 0.0538 / 0.0917 nats at (1e-4, 1.0),
+# (3e-4, 0.3) and (3e-4, 0.0).
+#
+# These are the (3e-4, 0.3) arm. It is not the largest step, and on eight
+# selection banks it was not even the best-looking arm; (1e-4, 1.0) scored higher
+# there and then REVERSED SIGN on eight held-out banks, pooling to -0.001. This
+# arm held its sign on both halves (+0.0094 select, +0.0067 held out) and pools
+# to +0.0080 +/- 0.0055 over sixteen banks. Anchor stays above zero because the
+# targets only cover states where branches disagreed; the anchor is what holds
+# the other two thirds of the policy in place.
+EPOCHS = 8
 BATCH = 256
-LEARNING_RATE = 1e-5
-ANCHOR_COEF = 1.0
+LEARNING_RATE = 3e-4
+ANCHOR_COEF = 0.3
 # The collector is latency-bound on per-frame GPU round-trips, not CPU-bound
 # (measured: 42 min CPU over 115 min wall). With the post-v26 fixed collector
 # and 8 workers, the observed rate is ~800-1150 samples/hour. A fixed 5h wall
@@ -86,13 +110,25 @@ EVAL_ROUNDS = 4
 # regression stops the loop even if saturated survival improved.
 FRESH_TARGET = 1150
 FRESH_EPISODES = 1024
-FRESH_BASELINE_MEAN = 814.92     # the 24M control, 2048 episodes
+# round1.pt's OWN fresh play, measured 2026-07-30: 751.8, CI [730.7, 774.2].
+# This was 814.92, which is the 24M control -- a different lineage. Every
+# candidate was therefore scored against a policy it is not descended from, and
+# the resulting "regressed to 0.92x baseline" readings were measuring lineage,
+# not damage: the no-op candidate scored 764.5 while sitting 0.001 nats from its
+# parent. All three step-ladder arms land inside the CI above, so a real step
+# does not hurt the prefix.
+FRESH_BASELINE_MEAN = 751.8
 FRESH_REGRESSION_LIMIT = 0.80    # fraction of baseline mean height tolerated
 
-# A round must beat the base by more than bank-to-bank noise. v22 measured the
-# log-hazard spread at +/-0.017 nats across banks for a fixed policy pair, so
-# anything under half that is not evidence.
-MIN_NATS_GAIN = 0.008
+# Gate on BLOCKS, not rounds. One round buys about +0.008 nats against an SE of
+# 0.0055, which is z=1.5 -- a per-round gate set high enough to be meaningful
+# would reject most genuine rounds, and one set low enough to pass them would be
+# accepting noise. Four accumulated rounds move roughly 4x as far against the
+# same measurement, so the block is what can actually be resolved, and verifying
+# once per block costs a quarter of the eval time. Rounds inside a block are
+# accepted unconditionally; the block is what can be rolled back.
+VERIFY_EVERY = 4
+MIN_BLOCK_GAIN = 0.016
 MAX_ROUNDS = 40
 WALL_HOURS = 168.0
 POLL_SECONDS = 120
@@ -112,6 +148,14 @@ class DistillLoop:
         self.state_path = self.state_dir / 'distill-state.json'
         self.results_path = self.state_dir / 'RESULTS.md'
         self.state = json.loads(self.state_path.read_text())
+        # `best_checkpoint` is the working head and moves every round;
+        # `verified_checkpoint` is the last one a block measurement stood behind
+        # and is what a failed block falls back to. A state file written before
+        # block gating has only the former.
+        self.state.setdefault('verified_checkpoint',
+                              self.state['best_checkpoint'])
+        self.state.setdefault('verified_nats', self.state['best_nats'])
+        self.state.setdefault('block_misses', 0)
 
     def save(self):
         temporary = self.state_path.with_suffix('.tmp')
@@ -221,7 +265,7 @@ class DistillLoop:
     def round(self):
         index = self.state['round']
         base = self.state['best_checkpoint']
-        samples = RETRY_SAMPLES if self.state['retrying'] else SAMPLES
+        samples = RETRY_SAMPLES if self.state.get('block_misses') else SAMPLES
         collect_hours = max(
             COLLECT_MIN_HOURS,
             COLLECT_HOURS_PER_8K * samples / SAMPLES,
@@ -260,60 +304,75 @@ class DistillLoop:
             self.stop('NEEDS-ATTENTION', f'round {index} train produced no marker')
             return
 
-        after = self.evaluate(candidate, f'round-{index}-eval')
-        if after is None:
-            self.stop('NEEDS-ATTENTION', f'round {index} evaluation incomplete')
-            return
-        before = self.state['best_nats']
-        gain = sum(before[b] for b in BANKS) / len(BANKS) - \
-            sum(after[b] for b in BANKS) / len(BANKS)
-        detail = ' '.join(
-            f'{b}:{math.exp(-after[b]):.4f}' for b in BANKS)
+        # Adopt every round so the next one searches from the improved policy.
+        # A single round cannot be resolved against its own noise, so nothing is
+        # decided here; the block boundary below is where a result exists.
+        self.state['best_checkpoint'] = str(candidate)
+        self.state['round'] += 1
 
         fresh = self.fresh_eval(candidate, f'round-{index}')
         fresh_note = 'fresh=n/a'
         if fresh is not None:
             fresh_note = f'fresh={fresh:.1f} ({fresh / FRESH_BASELINE_MEAN:.2f}x base)'
-
-        self.state['round'] += 1
         if (fresh is not None
                 and fresh < FRESH_REGRESSION_LIMIT * FRESH_BASELINE_MEAN):
+            self.state['best_checkpoint'] = self.state['verified_checkpoint']
             self.record(
-                f'round {index}: {detail} | mean gain {gain:+.4f} nats | '
-                f'{fresh_note} → **REJECT** (fresh prefix regressed past '
-                f'{FRESH_REGRESSION_LIMIT:.0%} of baseline)')
+                f'round {index}: {fresh_note} → **ROLLBACK** (fresh prefix '
+                f'regressed past {FRESH_REGRESSION_LIMIT:.0%} of baseline)')
             self.stop('FRESH-REGRESSION',
-                      'distillation improved saturated survival while damaging '
-                      'fresh play; needs a prefix term or mixed-state targets')
+                      'distillation damaged fresh play; needs a prefix term or '
+                      'mixed-state targets')
             return
-        if gain >= MIN_NATS_GAIN:
-            self.state.update(best_checkpoint=str(candidate), best_nats=after,
-                              retrying=False)
+
+        if index % VERIFY_EVERY:
+            self.record(
+                f'round {index}: {fresh_note} → adopted unverified '
+                f'(samples={actual_samples}/{samples}); '
+                f'block verifies at round {index + VERIFY_EVERY - index % VERIFY_EVERY}')
+            self.save()
+            return
+
+        after = self.evaluate(candidate, f'round-{index}-eval')
+        if after is None:
+            self.stop('NEEDS-ATTENTION', f'round {index} evaluation incomplete')
+            return
+        before = self.state['verified_nats']
+        gain = sum(before[b] for b in BANKS) / len(BANKS) - \
+            sum(after[b] for b in BANKS) / len(BANKS)
+        block = f'rounds {index - VERIFY_EVERY + 1}-{index}'
+
+        if gain >= MIN_BLOCK_GAIN:
+            self.state.update(verified_checkpoint=str(candidate),
+                              verified_nats=after, block_misses=0)
             self.state['history'].append(
-                {'round': index, 'gain_nats': gain, 'nats': after,
+                {'block': block, 'gain_nats': gain, 'nats': after,
                  'fresh_mean_height': fresh, 'checkpoint': str(candidate),
                  'samples': actual_samples})
             self.record(
-                f'round {index}: {detail} | mean gain {gain:+.4f} nats | '
-                f'{fresh_note} → **ACCEPT** '
-                f'(samples={actual_samples}/{samples})')
-        elif not self.state['retrying']:
-            self.state['retrying'] = True
-            self.record(
-                f'round {index}: {detail} | mean gain {gain:+.4f} nats | '
-                f'{fresh_note} → **RETRY** at {RETRY_SAMPLES} samples (below '
-                f'{MIN_NATS_GAIN} threshold; collected '
-                f'{actual_samples}/{samples})')
-        else:
-            self.state['retrying'] = False
-            self.record(
-                f'round {index}: {detail} | mean gain {gain:+.4f} nats | '
-                f'{fresh_note} → **PLATEAU** — two consecutive rounds below '
-                f'threshold (collected {actual_samples}/{samples})')
-            self.stop('PLATEAU', 'search distillation stopped improving; the '
-                                 'ceiling curve says raise K or move to margin')
+                f'{block}: mean gain {gain:+.4f} nats over {len(BANKS)} banks | '
+                f'{fresh_note} → **PROMOTE**')
+            self.save()
             return
-        self.save()
+
+        # The block did not clear the gate, so the last verified checkpoint is
+        # the best thing that exists and the rounds since are discarded.
+        self.state['best_checkpoint'] = self.state['verified_checkpoint']
+        self.state['block_misses'] = self.state.get('block_misses', 0) + 1
+        if self.state['block_misses'] < 2:
+            self.record(
+                f'{block}: mean gain {gain:+.4f} nats over {len(BANKS)} banks | '
+                f'{fresh_note} → **ROLLBACK**, retrying the block at '
+                f'{RETRY_SAMPLES} samples/round')
+            self.save()
+            return
+        self.record(
+            f'{block}: mean gain {gain:+.4f} nats over {len(BANKS)} banks | '
+            f'{fresh_note} → **PLATEAU** — two consecutive blocks below '
+            f'{MIN_BLOCK_GAIN} nats')
+        self.stop('PLATEAU', 'search distillation stopped compounding; raise K, '
+                             'or move to option-level continuations or margin '
+                             'training')
 
     def run(self):
         log(f'driver up: round={self.state["round"]} '
@@ -341,7 +400,9 @@ def bootstrap(state_dir, checkpoint, nats):
         'round': 1,
         'best_checkpoint': str(checkpoint),
         'best_nats': nats,
-        'retrying': False,
+        'verified_checkpoint': str(checkpoint),
+        'verified_nats': nats,
+        'block_misses': 0,
         'history': [],
         'started_at': time.time(),
         'done': False,
@@ -351,10 +412,15 @@ def bootstrap(state_dir, checkpoint, nats):
     if not results.exists():
         results.write_text(
             '# Search-distillation loop\n\n'
-            f'Accept a round when mean log-hazard over {list(BANKS)} improves by '
-            f'>= {MIN_NATS_GAIN} nats/layer. Gating on the mean in nats because '
-            'absolute survival swings 0.10 between banks (v22) while the '
-            'log-hazard difference is stable to +/-0.017.\n\n')
+            f'Rounds are adopted unverified and gated in blocks of '
+            f'{VERIFY_EVERY}: a block promotes when mean log-hazard over '
+            f'{len(BANKS)} banks improves by >= {MIN_BLOCK_GAIN} nats/layer, '
+            'otherwise it rolls back to the last verified checkpoint. One round '
+            'moves about +0.008 nats against an SE of 0.0055, so a single round '
+            'is not resolvable against its own noise and a block is; verifying '
+            'per block is also a quarter of the eval cost. Gating on the mean in '
+            'nats because absolute survival swings 0.10 between banks while the '
+            'paired difference has SD 0.0142.\n\n')
     log(f'bootstrapped {path}')
 
 
